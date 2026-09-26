@@ -110,9 +110,9 @@ def test_oauth_routes_load_the_provider_from_the_requested_profile(tmp_path, mon
         (plugin_dir / "__init__.py").write_text('"""register_memory_provider"""\n', encoding="utf-8")
         (plugin_dir / "oauth_flow.py").write_text(
             "def get_flow_status():\n"
-            f"    return {{'state': 'idle', 'profile': {label!r}}}\n"
+            f"    return {{'state': 'idle', 'detail': {label!r}, 'connected': False, 'auth': None}}\n"
             "def start_loopback_flow_background():\n"
-            f"    return {{'state': 'pending', 'profile': {label!r}}}\n",
+            f"    return {{'state': 'pending', 'detail': {label!r}}}\n",
             encoding="utf-8",
         )
 
@@ -120,7 +120,7 @@ def test_oauth_routes_load_the_provider_from_the_requested_profile(tmp_path, mon
     for profile in ("default", "work", "default"):
         status = client.get("/api/memory/providers/honcho/oauth/status", params={"profile": profile})
         assert status.status_code == 200, status.text
-        assert status.json()["profile"] == profile
+        assert status.json()["detail"] == profile
         start = client.post("/api/memory/providers/honcho/oauth/start", params={"profile": profile})
         assert start.status_code == 200, start.text
-        assert start.json()["profile"] == profile
+        assert start.json()["detail"] == profile

@@ -40,9 +40,16 @@ from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.messaging import (
+    MessagingPlatformTestResponse, MessagingPlatformUpdateResponse, MessagingPlatformsResponse,
+    TelegramOnboardingApplyResponse, TelegramOnboardingStartResponse,
+    TelegramOnboardingStatusResponse, WhatsAppOnboardingApplyResponse, WhatsAppOnboardingResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
@@ -563,7 +570,7 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
-@router.post("/api/messaging/whatsapp/onboarding/start")
+@router.post("/api/messaging/whatsapp/onboarding/start", responses={200: {"model": WhatsAppOnboardingResponse}})
 async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
@@ -597,7 +604,7 @@ def _whatsapp_record_or_404(pairing_id: str):
     return record
 
 
-@router.get("/api/messaging/whatsapp/onboarding/{pairing_id}")
+@router.get("/api/messaging/whatsapp/onboarding/{pairing_id}", responses={200: {"model": WhatsAppOnboardingResponse}})
 async def get_whatsapp_onboarding_status(pairing_id: str):
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
@@ -606,7 +613,8 @@ async def get_whatsapp_onboarding_status(pairing_id: str):
         return _whatsapp_onboarding_payload(pairing_id, record)
 
 
-@router.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply")
+@router.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply",
+             responses={200: {"model": WhatsAppOnboardingApplyResponse}})
 async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None):
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
@@ -637,7 +645,7 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
     return {"ok": True, "platform": "whatsapp", "needs_restart": not restart_result["restart_started"], **restart_result}
 
 
-@router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")
+@router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}", responses={200: {"model": OkResponse}})
 async def cancel_whatsapp_onboarding(pairing_id: str):
     with _whatsapp_onboarding_lock:
         record = _whatsapp_onboarding_sessions.pop(pairing_id, None)
@@ -694,7 +702,7 @@ async def _telegram_onboarding_request(method: str, path: str, *, body=None, bea
     return await asyncio.to_thread(_telegram_onboarding_request_sync, method, path, body=body, bearer_token=bearer_token)
 
 
-@router.post("/api/messaging/telegram/onboarding/start")
+@router.post("/api/messaging/telegram/onboarding/start", responses={200: {"model": TelegramOnboardingStartResponse}})
 async def start_telegram_onboarding(body: TelegramOnboardingStart):
     bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
     payload = await _telegram_onboarding_request("POST", "/v1/telegram/pairings", body={"bot_name": bot_name})
@@ -717,7 +725,8 @@ async def start_telegram_onboarding(body: TelegramOnboardingStart):
     }
 
 
-@router.get("/api/messaging/telegram/onboarding/{pairing_id}")
+@router.get("/api/messaging/telegram/onboarding/{pairing_id}",
+            responses={200: {"model": TelegramOnboardingStatusResponse}})
 async def get_telegram_onboarding_status(pairing_id: str):
     with _telegram_onboarding_lock:
         record = _telegram_record_or_404(pairing_id)
@@ -756,7 +765,8 @@ async def get_telegram_onboarding_status(pairing_id: str):
     raise HTTPException(status_code=502, detail="Telegram setup service returned an unknown status.")
 
 
-@router.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
+@router.post("/api/messaging/telegram/onboarding/{pairing_id}/apply",
+             responses={200: {"model": TelegramOnboardingApplyResponse}})
 async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None):
     normalized_ids = [_normalize_telegram_user_id(raw_id) for raw_id in body.allowed_user_ids]
     if not all(normalized_ids):
@@ -796,7 +806,7 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
     }
 
 
-@router.delete("/api/messaging/telegram/onboarding/{pairing_id}")
+@router.delete("/api/messaging/telegram/onboarding/{pairing_id}", responses={200: {"model": OkResponse}})
 async def cancel_telegram_onboarding(pairing_id: str):
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
@@ -806,7 +816,7 @@ async def cancel_telegram_onboarding(pairing_id: str):
 # ── platform list / update / test ──────────────────────────────
 
 
-@router.get("/api/messaging/platforms")
+@router.get("/api/messaging/platforms", responses={200: {"model": MessagingPlatformsResponse}})
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the global profile switcher shows the TARGET profile's channel state.
     def _run():
@@ -865,7 +875,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     )
 
 
-@router.put("/api/messaging/platforms/{platform_id}")
+@router.put("/api/messaging/platforms/{platform_id}", responses={200: {"model": MessagingPlatformUpdateResponse}})
 async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
 
@@ -939,7 +949,7 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
     return notify_multiplexer_profiles_changed(name) is not None
 
 
-@router.post("/api/messaging/platforms/{platform_id}/test")
+@router.post("/api/messaging/platforms/{platform_id}/test", responses={200: {"model": MessagingPlatformTestResponse}})
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
 

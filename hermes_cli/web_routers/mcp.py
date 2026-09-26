@@ -20,12 +20,19 @@ from fastapi.responses import HTMLResponse
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
+from hermes_cli.web_responses.base import OkResponse, text_body
+from hermes_cli.web_responses.mcp import (
+    McpCatalogInstallResponse, McpCatalogResponse, McpOAuthCancelResponse, McpOAuthFlowResponse,
+    McpOAuthFlowStatusResponse, McpServerAddResponse, McpServerEnabledResponse,
+    McpServerListResponse, McpServerTestResponse,
+)
 from hermes_cli.web_routers._common import (
     _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
     log as _log, scoped_to_thread,
 )
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _require_token = late("_require_token")
@@ -91,7 +98,7 @@ def _mcp_install_action_name(name: str) -> str:
     return action
 
 
-@router.get("/api/mcp/servers")
+@router.get("/api/mcp/servers", responses={200: {"model": McpServerListResponse}})
 async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
@@ -107,7 +114,7 @@ async def list_mcp_servers(profile: Optional[str] = None):
     ]}
 
 
-@router.post("/api/mcp/servers")
+@router.post("/api/mcp/servers", responses={200: {"model": McpServerAddResponse}})
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
@@ -148,7 +155,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     return _mcp_server_summary(name, server_config)
 
 
-@router.put("/api/mcp/servers")
+@router.put("/api/mcp/servers", responses={200: {"model": OkResponse}})
 async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = None):
     """Replace the entire ``mcp_servers`` map (the mcp.json editor's save) —
     the deep-merging ``/api/config`` can never delete a key or drop an
@@ -171,7 +178,7 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
     return {"ok": True}
 
 
-@router.delete("/api/mcp/servers/{name}")
+@router.delete("/api/mcp/servers/{name}", responses={200: {"model": OkResponse}})
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _remove_mcp_server
 
@@ -192,7 +199,7 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
     return {"ok": True}
 
 
-@router.post("/api/mcp/servers/{name}/test")
+@router.post("/api/mcp/servers/{name}/test", responses={200: {"model": McpServerTestResponse}})
 async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
     from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
@@ -242,7 +249,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     }
 
 
-@router.post("/api/mcp/servers/{name}/auth")
+@router.post("/api/mcp/servers/{name}/auth", responses={200: {"model": McpOAuthFlowResponse}})
 async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = None):
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_cli.mcp_config import _get_mcp_servers
@@ -301,7 +308,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     return flow.snapshot()
 
 
-@router.get("/api/mcp/oauth/flows/{flow_id}")
+@router.get("/api/mcp/oauth/flows/{flow_id}", responses={200: {"model": McpOAuthFlowStatusResponse}})
 async def mcp_oauth_flow_status(flow_id: str, request: Request):
     _require_token(request)
     _gc_mcp_oauth_flows()
@@ -313,7 +320,7 @@ async def mcp_oauth_flow_status(flow_id: str, request: Request):
     return snapshot
 
 
-@router.delete("/api/mcp/oauth/flows/{flow_id}")
+@router.delete("/api/mcp/oauth/flows/{flow_id}", responses={200: {"model": McpOAuthCancelResponse}})
 async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     """Cancel an in-flight flow. mark_error unblocks the worker so it frees the
     per-server "already in progress" slot — otherwise a renderer that stops
@@ -327,7 +334,16 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 
-@router.get("/api/mcp/oauth/callback/{server_name:path}")
+@router.get(
+    "/api/mcp/oauth/callback/{server_name:path}",
+    response_class=HTMLResponse,
+    responses={
+        200: text_body("Authorization received page"),
+        400: text_body("Callback rejected / authorization failed page"),
+        404: text_body("OAuth flow expired page"),
+        409: text_body("Callback already received page"),
+    },
+)
 async def mcp_oauth_callback(
     server_name: str,
     code: Optional[str] = None,
@@ -360,7 +376,7 @@ async def mcp_oauth_callback(
     return HTMLResponse("<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>")
 
 
-@router.put("/api/mcp/servers/{name}/enabled")
+@router.put("/api/mcp/servers/{name}/enabled", responses={200: {"model": McpServerEnabledResponse}})
 async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Optional[str] = None):
     """Toggle ``enabled`` (takes effect on next session/gateway); disabled
     servers stay in config so they can be re-enabled without re-entry."""
@@ -427,7 +443,7 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
     }
 
 
-@router.get("/api/mcp/catalog")
+@router.get("/api/mcp/catalog", responses={200: {"model": McpCatalogResponse}})
 async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
     entry annotated with installed/enabled state for ``profile``. Opt-in app
@@ -489,7 +505,7 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
     return result
 
 
-@router.post("/api/mcp/catalog/install")
+@router.post("/api/mcp/catalog/install", responses={200: {"model": McpCatalogInstallResponse}})
 async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None):
     """Install a catalog MCP into config.yaml (declared env vars go to .env
     first; git-bootstrap entries run via the background CLI action path)."""

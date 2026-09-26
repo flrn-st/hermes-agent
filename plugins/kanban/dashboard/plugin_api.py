@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
 import json
 import logging
 import re
 import sqlite3
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -36,10 +38,42 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
+from hermes_cli.web_responses.base import OkResponse, binary_body
+
+
+def _load_sibling(module_name: str, file_name: str) -> None:
+    """Register a module that sits next to this file under ``module_name``. The dashboard loads
+    ``plugin_api.py`` by path (the plugin is not an importable package), so its siblings are
+    loaded the same way."""
+    if module_name in sys.modules:
+        return
+    spec = importlib.util.spec_from_file_location(module_name, Path(__file__).with_name(file_name))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+
+_load_sibling("hermes_dashboard_plugin_kanban_responses", "plugin_api_responses.py")
+from hermes_dashboard_plugin_kanban_responses import (  # noqa: E402
+    KanbanActiveWorkersResponse, KanbanAssigneesResponse, KanbanAttachmentDeleteResponse,
+    KanbanAttachmentListResponse, KanbanAttachmentUploadResponse, KanbanBoardCreateResponse,
+    KanbanBoardDeleteResponse, KanbanBoardExportResponse, KanbanBoardImportResponse,
+    KanbanBoardListResponse, KanbanBoardResponse, KanbanBoardSwitchResponse,
+    KanbanBoardUpdateResponse, KanbanBulkUpdateResponse, KanbanDashboardConfigResponse,
+    KanbanDecomposeResponse, KanbanDiagnosticsResponse, KanbanDispatchResponse,
+    KanbanEstimateResponse, KanbanHomeChannelsResponse, KanbanHomeSubscriptionResponse,
+    KanbanLinkAddResponse, KanbanModelOptionsResponse, KanbanOrchestrationResponse,
+    KanbanProfileAutoDescribeResponse, KanbanProfileDescriptionResponse, KanbanProfilesResponse,
+    KanbanProjectsResponse, KanbanReassignResponse, KanbanRunInspectResponse, KanbanRunResponse,
+    KanbanRunTerminateResponse, KanbanSpecifyResponse, KanbanStatsResponse, KanbanTaskAckResponse,
+    KanbanTaskCreateResponse, KanbanTaskDeleteResponse, KanbanTaskDetailResponse,
+    KanbanTaskLogResponse, KanbanTaskUpdateResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
@@ -344,7 +378,7 @@ def get_board(
 _read_board = coalesced_read(get_board)
 
 
-@router.get("/board")
+@router.get("/board", responses={200: {"model": KanbanBoardResponse}})
 async def get_board_endpoint(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
@@ -364,7 +398,7 @@ async def get_board_endpoint(
 
 # --- GET /tasks/:id ---------------------------------------------------------
 
-@router.get("/tasks/{task_id}")
+@router.get("/tasks/{task_id}", responses={200: {"model": KanbanTaskDetailResponse}})
 def get_task(
     task_id: str,
     board: Optional[str] = Query(None),
@@ -420,7 +454,7 @@ class CreateTaskBody(BaseModel):
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
 
 
-@router.post("/tasks")
+@router.post("/tasks", responses={200: {"model": KanbanTaskCreateResponse}})
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         # CreateTaskBody field names match create_task's keyword parameters.
@@ -449,14 +483,14 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Size cap, filename sanitiser, and collision resolver live in ``kanban_db`` so the
 # dashboard, agent toolset, and CLI share one implementation.
 
-@router.get("/tasks/{task_id}/attachments")
+@router.get("/tasks/{task_id}/attachments", responses={200: {"model": KanbanAttachmentListResponse}})
 def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
         return {"attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)]}
 
 
-@router.post("/tasks/{task_id}/attachments")
+@router.post("/tasks/{task_id}/attachments", responses={200: {"model": KanbanAttachmentUploadResponse}})
 async def upload_task_attachment(
     task_id: str,
     file: UploadFile = File(...),
@@ -490,7 +524,10 @@ async def upload_task_attachment(
         return {"attachment": _attachment_dict(att) if att else None}
 
 
-@router.get("/attachments/{attachment_id}")
+@router.get(
+    "/attachments/{attachment_id}", response_class=FileResponse,
+    responses={200: binary_body("The file, served with its stored content type (application/octet-stream "
+                                "when unknown).", "application/octet-stream")})
 def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         att = kanban_db.get_attachment(conn, attachment_id)
@@ -508,7 +545,7 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         return FileResponse(path=str(stored), filename=att.filename, media_type=att.content_type or "application/octet-stream")
 
 
-@router.delete("/attachments/{attachment_id}")
+@router.delete("/attachments/{attachment_id}", responses={200: {"model": KanbanAttachmentDeleteResponse}})
 def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         if kanban_db.delete_attachment(conn, attachment_id) is None:
@@ -677,7 +714,7 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
         conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
 
 
-@router.patch("/tasks/{task_id}")
+@router.patch("/tasks/{task_id}", responses={200: {"model": KanbanTaskUpdateResponse}})
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
@@ -704,7 +741,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         ) if updated else None}
 
 
-@router.delete("/tasks/{task_id}")
+@router.delete("/tasks/{task_id}", responses={200: {"model": KanbanTaskDeleteResponse}})
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         if not kanban_db.delete_task(conn, task_id):
@@ -787,7 +824,7 @@ class CommentBody(BaseModel):
     author: Optional[str] = "dashboard"
 
 
-@router.post("/tasks/{task_id}/comments")
+@router.post("/tasks/{task_id}/comments", responses={200: {"model": OkResponse}})
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
@@ -802,14 +839,14 @@ class LinkBody(BaseModel):
     child_id: str
 
 
-@router.post("/links")
+@router.post("/links", responses={200: {"model": KanbanLinkAddResponse}})
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True, "gated": gated}
 
 
-@router.delete("/links")
+@router.delete("/links", responses={200: {"model": OkResponse}})
 def delete_link(parent_id: str = Query(...), child_id: str = Query(...), board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         return {"ok": bool(kanban_db.unlink_tasks(conn, parent_id, child_id))}
@@ -843,7 +880,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
                 entry.update(ok=False, error=str(e))
 
 
-@router.post("/tasks/bulk")
+@router.post("/tasks/bulk", responses={200: {"model": KanbanBulkUpdateResponse}})
 def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id. Independent iteration — per-task
     failures don't abort siblings; returns per-id outcome for partials."""
@@ -867,7 +904,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
 
 # --- Diagnostics — fleet-wide distress signals (see kanban_diagnostics) ------
 
-@router.get("/diagnostics")
+@router.get("/diagnostics", responses={200: {"model": KanbanDiagnosticsResponse}})
 def list_diagnostics(
     board: Optional[str] = _BOARD_Q,
     severity: Optional[str] = Query(None, description="Filter by severity: warning|error|critical")):
@@ -905,7 +942,7 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
-@router.get("/workers/active")
+@router.get("/workers/active", responses={200: {"model": KanbanActiveWorkersResponse}})
 def list_active_workers(board: Optional[str] = _BOARD_Q):
     """Every running worker: an open ``task_runs`` row with a ``worker_pid`` whose
     task is ``running``. Returns ``{workers, count, checked_at}``."""
@@ -921,14 +958,14 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", responses={200: {"model": KanbanRunResponse}})
 def get_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """``{run: {...}}`` with the same serialisation as ``GET /tasks/{id}``; 404 if unknown."""
     with _board_conn(board) as (board, conn):
         return {"run": asdict(_require_run(conn, run_id))}
 
 
-@router.get("/runs/{run_id}/inspect")
+@router.get("/runs/{run_id}/inspect", responses={200: {"model": KanbanRunInspectResponse}})
 def inspect_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """Live psutil stats for a run's worker; ``{alive: false, reason}`` when unavailable and
     access-denied reported inline rather than as a 500."""
@@ -970,7 +1007,7 @@ class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/runs/{run_id}/terminate")
+@router.post("/runs/{run_id}/terminate", responses={200: {"model": KanbanRunTerminateResponse}})
 def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Optional[str] = _BOARD_Q):
     """Terminate an in-flight run via ``reclaim_task`` (same SIGTERM->SIGKILL flow, bookkeeping
     and events as ``POST /tasks/{id}/reclaim``); 409 if already ended / not reclaimable.
@@ -993,7 +1030,7 @@ class ReclaimBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reclaim")
+@router.post("/tasks/{task_id}/reclaim", responses={200: {"model": KanbanTaskAckResponse}})
 def reclaim_task_endpoint(task_id: str, payload: ReclaimBody, board: Optional[str] = Query(None)):
     """Release an active worker claim without waiting for the claim TTL
     (``hermes kanban reclaim <task_id> --reason ...``)."""
@@ -1010,7 +1047,7 @@ class SpecifyBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/specify")
+@router.post("/tasks/{task_id}/specify", responses={200: {"model": KanbanSpecifyResponse}})
 def specify_task_endpoint(task_id: str, payload: SpecifyBody, board: Optional[str] = Query(None)):
     """Flesh out a triage task via the auxiliary LLM (``hermes kanban specify``). Non-OK is NOT
     an HTTP error — the UI renders the reason inline. Sync ``def`` → runs in the threadpool."""
@@ -1024,7 +1061,7 @@ class ReassignBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reassign")
+@router.post("/tasks/{task_id}/reassign", responses={200: {"model": KanbanReassignResponse}})
 def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[str] = Query(None)):
     """Reassign to another profile, optionally reclaiming first
     (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
@@ -1056,13 +1093,13 @@ class EstimateBody(BaseModel):
     body: Optional[str] = None
 
 
-@router.post("/estimate")
+@router.post("/estimate", responses={200: {"model": KanbanEstimateResponse}})
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
     return _run_estimate(payload.title, payload.body, task_id=None)
 
 
-@router.post("/tasks/{task_id}/estimate")
+@router.post("/tasks/{task_id}/estimate", responses={200: {"model": KanbanEstimateResponse}})
 def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
@@ -1134,7 +1171,7 @@ def _load_config_or_empty() -> dict:
         return {}
 
 
-@router.get("/config")
+@router.get("/config", responses={200: {"model": KanbanDashboardConfigResponse}})
 def get_config():
     """Kanban dashboard preferences from the ``dashboard.kanban`` config section."""
     k_cfg = (_load_config_or_empty().get("dashboard") or {}).get("kanban") or {}
@@ -1181,7 +1218,7 @@ def _home_for_platform(platform: str, detail: str) -> dict:
     return home
 
 
-@router.get("/home-channels")
+@router.get("/home-channels", responses={200: {"model": KanbanHomeChannelsResponse}})
 def get_home_channels(task_id: Optional[str] = Query(None), board: Optional[str] = Query(None)):
     """Every platform with a home channel plus whether *task_id* (if given) is
     subscribed to it; without ``task_id`` every ``subscribed`` is false."""
@@ -1196,7 +1233,7 @@ def get_home_channels(task_id: Optional[str] = Query(None), board: Optional[str]
         {**home, "subscribed": (home["platform"], home["chat_id"], home["thread_id"]) in subscribed_homes} for home in homes]}
 
 
-@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+@router.post("/tasks/{task_id}/home-subscribe/{platform}", responses={200: {"model": KanbanHomeSubscriptionResponse}})
 def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Subscribe *task_id* to *platform*'s home channel. Idempotent at the DB
     layer; 404 when the platform has no home or the task doesn't exist."""
@@ -1213,7 +1250,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
         return {"ok": True, "task_id": task_id, "home_channel": home}
 
 
-@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+@router.delete("/tasks/{task_id}/home-subscribe/{platform}", responses={200: {"model": KanbanHomeSubscriptionResponse}})
 def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Remove any notify subscription on *task_id* matching *platform*'s home."""
     home = _home_for_platform(platform, f"No home channel configured for platform {platform!r}.")
@@ -1225,14 +1262,14 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
 
 # --- Stats / assignees / worker log / dispatch / model options ---------------
 
-@router.get("/stats")
+@router.get("/stats", responses={200: {"model": KanbanStatsResponse}})
 def get_stats(board: Optional[str] = Query(None)):
     """Per-status + per-assignee counts + oldest-ready age (HUD and router profiles)."""
     with _board_conn(board) as (board, conn):
         return kanban_db.board_stats(conn)
 
 
-@router.get("/assignees")
+@router.get("/assignees", responses={200: {"model": KanbanAssigneesResponse}})
 def get_assignees(board: Optional[str] = Query(None)):
     """Union of on-disk profiles and assignees used on the board, so a fresh
     profile appears in the picker before it has any task."""
@@ -1240,7 +1277,7 @@ def get_assignees(board: Optional[str] = Query(None)):
         return {"assignees": kanban_db.known_assignees(conn)}
 
 
-@router.get("/tasks/{task_id}/log")
+@router.get("/tasks/{task_id}/log", responses={200: {"model": KanbanTaskLogResponse}})
 def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_000), board: Optional[str] = Query(None)):
     """Worker stdout/stderr log. ``tail`` caps the response bytes; 404 if the
     task never spawned. On-disk log rotates at 2 MiB with one ``.log.1`` kept."""
@@ -1254,7 +1291,7 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
         "size_bytes": size, "content": content or "", "truncated": bool(tail and size > tail)}
 
 
-@router.post("/dispatch")
+@router.post("/dispatch", responses={200: {"model": KanbanDispatchResponse}})
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
     with _board_conn(board) as (board, conn):
@@ -1265,7 +1302,7 @@ def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), b
             return {"result": str(result)}
 
 
-@router.get("/model-options")
+@router.get("/model-options", responses={200: {"model": KanbanModelOptionsResponse}})
 def model_options():
     """Providers + curated models for the override dropdown via ``inventory.build_models_payload``
     (same substrate as the Models page) so it can't offer a pair Hermes rejects. Skips pricing
@@ -1383,7 +1420,7 @@ def _annotate_board_meta(meta: dict) -> dict:
     return meta
 
 
-@router.get("/projects")
+@router.get("/projects", responses={200: {"model": KanbanProjectsResponse}})
 def list_kanban_projects():
     """Live (non-archived) projects available for board scoping."""
     with _errors_to_500("failed to list projects"):
@@ -1396,7 +1433,7 @@ def list_kanban_projects():
         for p in projects]}
 
 
-@router.get("/boards")
+@router.get("/boards", responses={200: {"model": KanbanBoardListResponse}})
 def list_boards(include_archived: bool = Query(False)):
     """Every board on disk with task counts and the active slug."""
     boards = kanban_db.list_boards(include_archived=include_archived)
@@ -1425,7 +1462,7 @@ def _validate_workdir(raw: str) -> str:
     return str(requested.resolve())
 
 
-@router.post("/boards")
+@router.post("/boards", responses={200: {"model": KanbanBoardCreateResponse}})
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a board. Idempotent — ``slug`` collision returns the existing one."""
     default_workdir = _validate_workdir(payload.default_workdir) if payload.default_workdir else None
@@ -1442,7 +1479,7 @@ def create_board_endpoint(payload: CreateBoardBody):
     return {"board": _annotate_board_meta(meta), "current": kanban_db.get_current_board()}
 
 
-@router.patch("/boards/{slug}")
+@router.patch("/boards/{slug}", responses={200: {"model": KanbanBoardUpdateResponse}})
 def rename_board(slug: str, payload: RenameBoardBody):
     """Update display metadata / default workdir / project scope (slug is immutable)."""
     normed = _existing_board_slug(slug)
@@ -1465,7 +1502,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
     return {"board": _annotate_board_meta(meta)}
 
 
-@router.delete("/boards/{slug}")
+@router.delete("/boards/{slug}", responses={200: {"model": KanbanBoardDeleteResponse}})
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
     """Archive (default) or hard-delete a board."""
     with _value_error_400():
@@ -1487,7 +1524,7 @@ async def _run_transfer(fn, log_label: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/boards/{slug}/export")
+@router.post("/boards/{slug}/export", responses={200: {"model": KanbanBoardExportResponse}})
 async def export_board_endpoint(slug: str, body: ExportBoardBody):
     """Write ``slug`` to a portable archive; return the path written."""
     from hermes_cli import kanban_transfer
@@ -1505,7 +1542,7 @@ async def export_board_endpoint(slug: str, body: ExportBoardBody):
         f"POST /boards/{slug}/export")
 
 
-@router.post("/boards/import")
+@router.post("/boards/import", responses={200: {"model": KanbanBoardImportResponse}})
 async def import_board_endpoint(body: ImportBoardBody):
     """Import a board archive as a NEW board; return the landed board."""
     from hermes_cli import kanban_transfer
@@ -1519,7 +1556,7 @@ async def import_board_endpoint(body: ImportBoardBody):
     return {**result, "current": kanban_db.get_current_board()}
 
 
-@router.post("/boards/{slug}/switch")
+@router.post("/boards/{slug}/switch", responses={200: {"model": KanbanBoardSwitchResponse}})
 def switch_board(slug: str):
     """Persist ``slug`` as the active board for CLI / slash-command parity
     (dashboard users pick boards client-side via localStorage)."""
@@ -1538,7 +1575,7 @@ class DescribeAutoBody(BaseModel):
     overwrite: bool = False
 
 
-@router.get("/profiles")
+@router.get("/profiles", responses={200: {"model": KanbanProfilesResponse}})
 def list_profile_roster():
     """Every installed profile with its description (profiles without one are
     still routable on name alone, just less precisely)."""
@@ -1552,7 +1589,7 @@ def list_profile_roster():
         for p in profiles]}
 
 
-@router.patch("/profiles/{profile_name}")
+@router.patch("/profiles/{profile_name}", responses={200: {"model": KanbanProfileDescriptionResponse}})
 def update_profile_description(profile_name: str, payload: DescribeBody):
     """Set (``description_auto: false`` so the auto-describer won't overwrite it
     without ``--overwrite``) or clear (empty string) a profile's description."""
@@ -1571,7 +1608,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     return {"ok": True, "profile": canon, "description": text}
 
 
-@router.post("/profiles/{profile_name}/describe-auto")
+@router.post("/profiles/{profile_name}/describe-auto", responses={200: {"model": KanbanProfileAutoDescribeResponse}})
 def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     """``hermes profile describe <name> --auto``: persist with ``description_auto: true``.
     Non-OK outcomes are NOT HTTP errors — the UI renders the reason inline."""
@@ -1587,7 +1624,7 @@ class DecomposeBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/decompose")
+@router.post("/tasks/{task_id}/decompose", responses={200: {"model": KanbanDecomposeResponse}})
 def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optional[str] = Query(None)):
     """Fan a triage task out into child tasks via the auxiliary LLM (``hermes kanban decompose``).
     Non-OK is NOT an HTTP error. Sync ``def`` → runs in the threadpool."""
@@ -1610,7 +1647,7 @@ class OrchestrationSettingsBody(BaseModel):
 _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 
 
-@router.get("/orchestration")
+@router.get("/orchestration", responses={200: {"model": KanbanOrchestrationResponse}})
 def get_orchestration_settings():
     """Current orchestration knobs from config.yaml plus the resolved effective
     values. An unset/unknown profile resolves to the active profile here; the
@@ -1652,7 +1689,7 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
     return name
 
 
-@router.put("/orchestration")
+@router.put("/orchestration", responses={200: {"model": KanbanOrchestrationResponse}})
 def set_orchestration_settings(payload: OrchestrationSettingsBody):
     """Update orchestration knobs in config.yaml. Only fields explicitly passed
     are written; empty profile strings clear the override."""

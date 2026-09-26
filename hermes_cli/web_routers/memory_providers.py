@@ -22,13 +22,18 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
+from hermes_cli.web_responses.memory_providers import (
+    MemoryProviderConfigSaveResponse, MemoryProviderDeclaredConfigResponse,
+    MemoryProviderLegacyConfigResponse, MemoryProviderSetupResponse,
+)
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_cli.web_server_memory")
@@ -505,7 +510,10 @@ def _require_valid_memory_provider_name(name: str) -> None:
         raise _unknown_provider(name)
 
 
-@router.get("/api/memory/providers/{name}/config")
+@router.get(
+    "/api/memory/providers/{name}/config",
+    responses={200: {"model": MemoryProviderDeclaredConfigResponse | MemoryProviderLegacyConfigResponse}},
+)
 async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
 
@@ -525,7 +533,7 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
     return await scoped_to_thread(profile, _run)
 
 
-@router.post("/api/memory/providers/{name}/setup")
+@router.post("/api/memory/providers/{name}/setup", responses={200: {"model": MemoryProviderSetupResponse}})
 async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest,
                                 profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
@@ -548,7 +556,7 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest,
     return await scoped_to_thread(profile, _run)
 
 
-@router.put("/api/memory/providers/{name}/config")
+@router.put("/api/memory/providers/{name}/config", responses={200: {"model": MemoryProviderConfigSaveResponse}})
 async def update_memory_provider_config(
     name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
 ):

@@ -458,10 +458,15 @@ def test_memory_provider_setup_runs_in_the_named_profiles_home(client, homes, mo
 
     monkeypatch.setattr(mp, "_memory_provider_manifest", lambda _name: {"name": "mem0"})
     monkeypatch.setattr(mp, "_load_memory_provider", lambda _name: None)
-    monkeypatch.setattr(mp, "_install_memory_provider_setup",
-                        lambda name: {"ok": True, "provider": name, "home": str(get_hermes_home())})
+    setup_homes = []
+
+    def _setup(name):
+        setup_homes.append(str(get_hermes_home()))
+        return {"ok": True, "provider": name, "results": [], "status": None}
+
+    monkeypatch.setattr(mp, "_install_memory_provider_setup", _setup)
 
     resp = client.post("/api/memory/providers/mem0/setup?profile=worker_beta", json={})
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["home"] == str(homes["worker_beta"])
+    assert setup_homes == [str(homes["worker_beta"])]

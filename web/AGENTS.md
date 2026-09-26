@@ -40,6 +40,11 @@ desktop has no build/runtime dependency on this frontend. Details: `apps/desktop
 - Auth: every new REST route and WS endpoint uses the same session token; never a second scheme.
 - Routers are one-file-per-surface; a new surface is a new `web_routers/<surface>.py`, not a growing
   `web_server.py`.
+- Every route documents its response: a model in `hermes_cli/web_responses/<surface>.py` attached with
+  `responses={200: {"model": X}}` (documentation only; never `response_model=`, which filters and
+  validates). Routers are `APIRouter(route_class=ContractRoute)`: under the test suite every JSON
+  response is validated against its model, so a handler that drifts fails its tests. Rules in
+  `web_responses/base.py`; `tests/hermes_cli/test_web_responses.py` fails a route that documents nothing.
 - Tests: Python in `tests/hermes_cli/` (routers, pty bridge); JS in the `web/` vitest suite. Python
   tests must not assert about `package.json` / `.tsx` sources (root testing rules). Root TypeScript
   style rules apply.
