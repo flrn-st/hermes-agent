@@ -19,8 +19,13 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
+from hermes_cli.web_responses.analytics import (
+    AnalyticsModelsResponse, AnalyticsUsageResponse, RawConfigYamlResponse,
+)
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -31,7 +36,7 @@ save_config = late("save_config", "hermes_cli.config")
 # ── Raw YAML config ──────────────────────────────────────────────────────────
 
 
-@router.get("/api/config/raw")
+@router.get("/api/config/raw", responses={200: {"model": RawConfigYamlResponse}})
 async def get_config_raw(profile: Optional[str] = None):
     """Raw config.yaml text plus its resolved path.
 
@@ -50,7 +55,7 @@ async def get_config_raw(profile: Optional[str] = None):
     return await asyncio.to_thread(_run)
 
 
-@router.put("/api/config/raw")
+@router.put("/api/config/raw", responses={200: {"model": OkResponse}})
 async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None):
     def _run():
         parsed = yaml.safe_load(body.yaml_text)
@@ -142,7 +147,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
-@router.get("/api/analytics/usage")
+@router.get("/api/analytics/usage", responses={200: {"model": AnalyticsUsageResponse}})
 async def get_usage_analytics(
     days: int = Query(30, ge=1, le=365),
     profile: Optional[str] = None,
@@ -407,7 +412,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
-@router.get("/api/analytics/models")
+@router.get("/api/analytics/models", responses={200: {"model": AnalyticsModelsResponse}})
 async def get_models_analytics(
     days: int = Query(30, ge=1, le=365),
     profile: Optional[str] = None,

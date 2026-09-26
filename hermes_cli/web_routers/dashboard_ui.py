@@ -22,9 +22,18 @@ from hermes_cli.web_server_memory import _normalize_memory_provider_name, _requi
 from hermes_cli.web_models import (
     FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
 )
+from hermes_cli.web_responses.base import OkResponse, binary_body
+from hermes_cli.web_responses.dashboard_ui import (
+    AgentPluginActivateResponse, AgentPluginInstallResponse, AgentPluginRemoveResponse,
+    AgentPluginToggleResponse, AgentPluginUpdateResponse, DashboardFontResponse,
+    DashboardFontSetResponse, DashboardPluginManifest, DashboardPluginsRescanResponse,
+    DashboardThemeSetResponse, DashboardThemesResponse, PluginCatalogResponse, PluginsHubResponse,
+    PluginVisibilityResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _get_dashboard_plugins = late("_get_dashboard_plugins")
@@ -48,7 +57,7 @@ def _set_dashboard_key(key: str, value, profile: Optional[str] = None) -> None:
         save_config(config)
 
 
-@router.get("/api/dashboard/themes")
+@router.get("/api/dashboard/themes", responses={200: {"model": DashboardThemesResponse}})
 async def get_dashboard_themes(profile: Optional[str] = None):
     """Available themes + the active one. Built-ins ship name/label/description only
     (the frontend owns their definitions in `web/src/themes/presets.ts`); user themes
@@ -68,7 +77,7 @@ async def get_dashboard_themes(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.put("/api/dashboard/theme")
+@router.put("/api/dashboard/theme", responses={200: {"model": DashboardThemeSetResponse}})
 async def set_dashboard_theme(body: ThemeSetBody, profile: Optional[str] = None):
     """Set the active dashboard theme (persists to config.yaml)."""
     await asyncio.to_thread(_set_dashboard_key, "theme", body.name, profile)
@@ -87,7 +96,7 @@ _FONT_CHOICES = frozenset({
 })
 
 
-@router.get("/api/dashboard/font")
+@router.get("/api/dashboard/font", responses={200: {"model": DashboardFontResponse}})
 async def get_dashboard_font(profile: Optional[str] = None):
     """Return the active font override (``"theme"`` = use the theme's font)."""
     def _run():
@@ -97,7 +106,7 @@ async def get_dashboard_font(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.put("/api/dashboard/font")
+@router.put("/api/dashboard/font", responses={200: {"model": DashboardFontSetResponse}})
 async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     """Set the font override (config.yaml). Unknown ids coerce to ``"theme"`` rather than
     400 so a stale client can't wedge the picker."""
@@ -128,7 +137,7 @@ def _plugin_activated(plugin: dict, enabled_set: set, disabled_set: set) -> bool
     return True
 
 
-@router.get("/api/dashboard/plugins")
+@router.get("/api/dashboard/plugins", responses={200: {"model": list[DashboardPluginManifest]}})
 async def get_dashboard_plugins(profile: Optional[str] = None):
     """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     def _run():
@@ -146,14 +155,14 @@ async def get_dashboard_plugins(profile: Optional[str] = None):
     ]
 
 
-@router.get("/api/dashboard/plugins/rescan")
+@router.get("/api/dashboard/plugins/rescan", responses={200: {"model": DashboardPluginsRescanResponse}})
 async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
 
 
-@router.get("/api/dashboard/plugins/hub")
+@router.get("/api/dashboard/plugins/hub", responses={200: {"model": PluginsHubResponse}})
 async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
@@ -180,7 +189,7 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     return result
 
 
-@router.get("/api/dashboard/plugins/catalog")
+@router.get("/api/dashboard/plugins/catalog", responses={200: {"model": PluginCatalogResponse}})
 async def get_plugins_catalog(request: Request):
     """Curated plugin catalog merged with installed state (session protected)."""
     _require_token(request)
@@ -221,7 +230,7 @@ async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
     return await asyncio.to_thread(_run)
 
 
-@router.post("/api/dashboard/agent-plugins/install")
+@router.post("/api/dashboard/agent-plugins/install", responses={200: {"model": AgentPluginInstallResponse}})
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
@@ -254,21 +263,21 @@ async def _named_plugin_action(request: Request, name: str, action: Callable[[st
         action(_validate_plugin_name(name)), fallback_error, rescan=rescan))
 
 
-@router.post("/api/dashboard/agent-plugins/{name:path}/enable")
+@router.post("/api/dashboard/agent-plugins/{name:path}/enable", responses={200: {"model": AgentPluginToggleResponse}})
 async def post_agent_plugin_enable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
     return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
                                       "Enable failed.", rescan=False)
 
 
-@router.post("/api/dashboard/agent-plugins/{name:path}/disable")
+@router.post("/api/dashboard/agent-plugins/{name:path}/disable", responses={200: {"model": AgentPluginToggleResponse}})
 async def post_agent_plugin_disable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
     return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
                                       "Disable failed.", rescan=False)
 
 
-@router.post("/api/dashboard/agent-plugins/{name:path}/update")
+@router.post("/api/dashboard/agent-plugins/{name:path}/update", responses={200: {"model": AgentPluginUpdateResponse}})
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
     # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
@@ -283,13 +292,13 @@ async def post_agent_plugin_update(request: Request, name: str):
         rescan=True)
 
 
-@router.delete("/api/dashboard/agent-plugins/{name:path}")
+@router.delete("/api/dashboard/agent-plugins/{name:path}", responses={200: {"model": AgentPluginRemoveResponse}})
 async def delete_agent_plugin(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
     return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
 
 
-@router.post("/api/dashboard/agent-plugins/activate")
+@router.post("/api/dashboard/agent-plugins/activate", responses={200: {"model": AgentPluginActivateResponse}})
 async def post_agent_plugin_activate(request: Request):
     """``hermes plugins install`` / ``enable`` in another process asks this backend to load the plugin
     for ``home`` and hand its MCP servers and skills to that profile's open chats
@@ -316,7 +325,7 @@ async def post_agent_plugin_activate(request: Request):
     return await asyncio.to_thread(_run)
 
 
-@router.put("/api/dashboard/plugin-providers")
+@router.put("/api/dashboard/plugin-providers", responses={200: {"model": OkResponse}})
 async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
                                profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
@@ -344,7 +353,7 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
     return await asyncio.to_thread(_run)
 
 
-@router.post("/api/dashboard/plugins/{name:path}/visibility")
+@router.post("/api/dashboard/plugins/{name:path}/visibility", responses={200: {"model": PluginVisibilityResponse}})
 async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody,
                                  profile: Optional[str] = None):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
@@ -382,7 +391,10 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 }
 
 
-@router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
+@router.get(
+    "/dashboard-plugins/{plugin_name}/{file_path:path}", response_class=FileResponse,
+    responses={200: binary_body("A static file from the plugin's ``dashboard/`` directory.",
+                               *sorted(set(_PLUGIN_ASSET_CONTENT_TYPES.values())))})
 async def serve_plugin_asset(plugin_name: str, file_path: str):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 

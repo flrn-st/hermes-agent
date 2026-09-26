@@ -19,10 +19,15 @@ from hermes_cli.web_server_config import (
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_cli.web_responses.models import (
+    AuxiliaryModelsResponse, ModelAssignmentResponse, ModelInfoResponse, ModelOptionsResponse,
+    MoaConfigResponse, MoaConfigSaveResponse, RecommendedDefaultModelResponse,
+)
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
@@ -87,7 +92,7 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
         pool.shutdown(wait=False)
 
 
-@router.get("/api/model/info")
+@router.get("/api/model/info", responses={200: {"model": ModelInfoResponse}})
 def get_model_info(profile: Optional[str] = None):
     """Resolved metadata for the configured model: auto-detected vs configured
     context length (so the UI can show "Auto-detected: 200K" beside the
@@ -135,7 +140,7 @@ def get_model_info(profile: Optional[str] = None):
         return dict(_EMPTY_MODEL_INFO)
 
 
-@router.get("/api/model/options")
+@router.get("/api/model/options", responses={200: {"model": ModelOptionsResponse}})
 async def get_model_options(
     profile: Optional[str] = None,
     refresh: bool = False,
@@ -173,7 +178,7 @@ def _nous_recommended_default() -> dict:
     return recommended_nous_default_model()
 
 
-@router.get("/api/model/recommended-default")
+@router.get("/api/model/recommended-default", responses={200: {"model": RecommendedDefaultModelResponse}})
 def get_recommended_default_model(provider: str = "", profile: Optional[str] = None):
     """Recommended default model for a freshly-authenticated provider, mirroring
     ``hermes model``'s curation so GUI onboarding lands on a sensible default.
@@ -216,7 +221,7 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
         return {"provider": slug, "model": "", "free_tier": None}
 
 
-@router.get("/api/model/auxiliary")
+@router.get("/api/model/auxiliary", responses={200: {"model": AuxiliaryModelsResponse}})
 def get_auxiliary_models(profile: Optional[str] = None):
     """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,
     base_url}, ...], "main": {provider, model}}``. ``profile`` scopes the read —
@@ -269,7 +274,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
 
 
-@router.get("/api/model/moa")
+@router.get("/api/model/moa", responses={200: {"model": MoaConfigResponse}})
 def get_moa_models(profile: Optional[str] = None):
     """Return the configured Mixture-of-Agents provider/model slots."""
     with http_failure("GET /api/model/moa failed", 500, detail="Failed to read MoA config"):
@@ -300,7 +305,7 @@ def _preset_dict(preset) -> dict:
     }
 
 
-@router.put("/api/model/moa")
+@router.put("/api/model/moa", responses={200: {"model": MoaConfigSaveResponse}})
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
@@ -373,7 +378,7 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             return {"ok": True, **normalized}
 
 
-@router.post("/api/model/set")
+@router.post("/api/model/set", responses={200: {"model": ModelAssignmentResponse}})
 async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = None):
     """Assign a model to the main slot or an auxiliary task slot. Writes
     ``~/.hermes/config.yaml`` — applies to **new** sessions only; a running chat

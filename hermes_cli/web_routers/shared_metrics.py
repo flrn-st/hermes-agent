@@ -13,9 +13,11 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from hermes_cli.web_responses.check import ContractRoute
+from hermes_cli.web_responses.shared_metrics import SharedMetricsConsentResponse
 from hermes_cli.web_routers._common import config_write_scope, scoped_to_thread
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 
 class ConsentAnswer(BaseModel):
@@ -31,12 +33,12 @@ def _read_consent() -> dict:
     return {**consent_state(read_raw_config()), "managed": is_managed()}
 
 
-@router.get("/api/shared-metrics/consent")
+@router.get("/api/shared-metrics/consent", responses={200: {"model": SharedMetricsConsentResponse}})
 async def get_shared_metrics_consent(profile: Optional[str] = None):
     return await scoped_to_thread(profile, _read_consent)
 
 
-@router.put("/api/shared-metrics/consent")
+@router.put("/api/shared-metrics/consent", responses={200: {"model": SharedMetricsConsentResponse}})
 async def put_shared_metrics_consent(body: ConsentAnswer, profile: Optional[str] = None):
     from hermes_cli.observability.shared_metrics_consent import save_consent
 

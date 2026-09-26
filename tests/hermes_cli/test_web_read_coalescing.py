@@ -12,6 +12,15 @@ async def wait_until(predicate):
             await asyncio.sleep(0.005)
 
 
+def _profile_row(name):
+    """A complete ``_profile_to_dict`` row, so the route answers its documented shape."""
+    return {"name": name, "path": f"/profiles/{name}", "is_default": False, "model": None, "provider": None,
+            "has_env": False, "skill_count": 0, "gateway_running": False, "description": "",
+            "description_auto": False, "bot_title": "", "distribution_name": None,
+            "distribution_version": None, "distribution_source": None, "has_alias": False,
+            "display_name": None}
+
+
 def async_test(fn):
     @wraps(fn)
     def run(*args, **kwargs):
@@ -36,7 +45,7 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
         return ["example"]
 
     monkeypatch.setattr(profiles_mod, "list_profiles", slow_profiles)
-    monkeypatch.setattr(profiles, "_profile_to_dict", lambda p: {"name": p})
+    monkeypatch.setattr(profiles, "_profile_to_dict", _profile_row)
     monkeypatch.setattr(profiles, "run_in_threadpool", run_in_threadpool)
     app = FastAPI()
     app.include_router(profiles.router)
@@ -63,6 +72,6 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
                 release.set()
                 responses = await asyncio.gather(*tasks)
             assert all(r.status_code == 200 for r in responses)
-            assert all(r.json() == {"profiles": [{"name": "example"}]} for r in responses)
+            assert all(r.json() == {"profiles": [_profile_row("example")]} for r in responses)
     finally:
         limiter.total_tokens = previous

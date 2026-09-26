@@ -28,8 +28,16 @@ from hermes_cli.web_models import (
     GitWorktreeAddBody,
     GitWorktreeRemoveBody,
 )
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.git import (
+    GitBaseBranchesResponse, GitBranchesResponse, GitBranchSwitchResponse, GitCommitContextResponse,
+    GitCreatePrResponse, GitDiffResponse, GitHubCliAuthResponse, GitPrListResponse,
+    GitRepoStatusResponse, GitReviewListResponse, GitRevParseResponse, GitShipInfoResponse,
+    GitWorktreeAddResponse, GitWorktreeRemoveResponse, GitWorktreesResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 
@@ -47,7 +55,7 @@ def _git_path(path: str) -> str:
     return str(_fs_path(path))
 
 
-@router.get("/api/git/status")
+@router.get("/api/git/status", responses={200: {"model": GitRepoStatusResponse | None}})
 async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
 
@@ -81,7 +89,7 @@ def _clear_gh_auth_probe_task(completed_task: asyncio.Task) -> None:
         _gh_auth_probe_task = None
 
 
-@router.get("/api/git/gh-auth")
+@router.get("/api/git/gh-auth", responses={200: {"model": GitHubCliAuthResponse}})
 async def gh_auth_status_route(refresh: bool = False):
     """``{"available", "authenticated"}`` for the `gh` CLI; cached 5 min
     (``refresh=true`` bypasses so the pill withdraws right after a login)."""
@@ -107,27 +115,27 @@ async def gh_auth_status_route(refresh: bool = False):
     return payload
 
 
-@router.get("/api/git/worktrees")
+@router.get("/api/git/worktrees", responses={200: {"model": GitWorktreesResponse}})
 async def git_worktrees_route(path: str):
     return {"worktrees": await _git_op(_web_git.worktree_list, _git_path(path))}
 
 
-@router.get("/api/git/branches")
+@router.get("/api/git/branches", responses={200: {"model": GitBranchesResponse}})
 async def git_branches_route(path: str):
     return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
 
 
-@router.get("/api/git/base-branches")
+@router.get("/api/git/base-branches", responses={200: {"model": GitBaseBranchesResponse}})
 async def git_base_branches_route(path: str):
     return {"branches": await _git_op(_web_git.base_branch_list, _git_path(path))}
 
 
-@router.get("/api/git/review/list")
+@router.get("/api/git/review/list", responses={200: {"model": GitReviewListResponse}})
 async def git_review_list_route(path: str, scope: str = "uncommitted", base: Optional[str] = None):
     return await _git_op(_web_git.review_list, _git_path(path), scope, base)
 
 
-@router.get("/api/git/review/diff")
+@router.get("/api/git/review/diff", responses={200: {"model": GitDiffResponse}})
 async def git_review_diff_route(
     path: str, file: str, request: Request,
     scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
@@ -138,7 +146,7 @@ async def git_review_diff_route(
     return {"diff": await _git_op(_web_git.review_diff, cwd, str(target), scope, base, staged)}
 
 
-@router.get("/api/git/file-diff")
+@router.get("/api/git/file-diff", responses={200: {"model": GitDiffResponse}})
 async def git_file_diff_route(path: str, file: str, request: Request):
     cwd = _git_path(path)
     target = _fs_path(file, cwd=cwd)
@@ -146,7 +154,7 @@ async def git_file_diff_route(path: str, file: str, request: Request):
     return {"diff": await _git_op(_web_git.file_diff_vs_head, cwd, str(target))}
 
 
-@router.get("/api/git/review/commit-context")
+@router.get("/api/git/review/commit-context", responses={200: {"model": GitCommitContextResponse}})
 async def git_commit_context_route(path: str, request: Request):
     cwd = _git_path(path)
     root = _hosted_fs_read_guard(Path(cwd), request)
@@ -154,52 +162,52 @@ async def git_commit_context_route(path: str, request: Request):
     return await _git_op(_web_git.review_commit_context, cwd, allowed)
 
 
-@router.get("/api/git/review/rev-parse")
+@router.get("/api/git/review/rev-parse", responses={200: {"model": GitRevParseResponse}})
 async def git_rev_parse_route(path: str, ref: Optional[str] = None):
     return {"sha": await _git_op(_web_git.review_rev_parse, _git_path(path), ref)}
 
 
-@router.get("/api/git/review/ship-info")
+@router.get("/api/git/review/ship-info", responses={200: {"model": GitShipInfoResponse}})
 async def git_ship_info_route(path: str):
     return await _git_op(_web_git.review_ship_info, _git_path(path))
 
 
-@router.post("/api/git/review/pr-list")
+@router.post("/api/git/review/pr-list", responses={200: {"model": GitPrListResponse}})
 async def git_pr_list_route(body: GitPrListBody):
     return await _git_op(_web_git.review_pr_list, _git_path(body.path), body.branches, body.numbers)
 
 
-@router.post("/api/git/review/stage")
+@router.post("/api/git/review/stage", responses={200: {"model": OkResponse}})
 async def git_stage_route(body: GitFileBody):
     return await _git_op(_web_git.review_stage, _git_path(body.path), body.file)
 
 
-@router.post("/api/git/review/unstage")
+@router.post("/api/git/review/unstage", responses={200: {"model": OkResponse}})
 async def git_unstage_route(body: GitFileBody):
     return await _git_op(_web_git.review_unstage, _git_path(body.path), body.file)
 
 
-@router.post("/api/git/review/revert")
+@router.post("/api/git/review/revert", responses={200: {"model": OkResponse}})
 async def git_revert_route(body: GitFileBody):
     return await _git_op(_web_git.review_revert, _git_path(body.path), body.file)
 
 
-@router.post("/api/git/review/commit")
+@router.post("/api/git/review/commit", responses={200: {"model": OkResponse}})
 async def git_commit_route(body: GitCommitBody):
     return await _git_op(_web_git.review_commit, _git_path(body.path), body.message, body.push)
 
 
-@router.post("/api/git/review/push")
+@router.post("/api/git/review/push", responses={200: {"model": OkResponse}})
 async def git_push_route(body: GitPathBody):
     return await _git_op(_web_git.review_push, _git_path(body.path))
 
 
-@router.post("/api/git/review/create-pr")
+@router.post("/api/git/review/create-pr", responses={200: {"model": GitCreatePrResponse}})
 async def git_create_pr_route(body: GitPathBody):
     return await _git_op(_web_git.review_create_pr, _git_path(body.path))
 
 
-@router.post("/api/git/worktree/add")
+@router.post("/api/git/worktree/add", responses={200: {"model": GitWorktreeAddResponse}})
 async def git_worktree_add_route(body: GitWorktreeAddBody):
     options = {
         key: value
@@ -209,13 +217,13 @@ async def git_worktree_add_route(body: GitWorktreeAddBody):
     return await _git_op(_web_git.worktree_add, _git_path(body.path), options)
 
 
-@router.post("/api/git/worktree/remove")
+@router.post("/api/git/worktree/remove", responses={200: {"model": GitWorktreeRemoveResponse}})
 async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
     return await _git_op(
         _web_git.worktree_remove, _git_path(body.path), _git_path(body.worktreePath), body.force
     )
 
 
-@router.post("/api/git/branch/switch")
+@router.post("/api/git/branch/switch", responses={200: {"model": GitBranchSwitchResponse}})
 async def git_branch_switch_route(body: GitBranchSwitchBody):
     return await _git_op(_web_git.branch_switch, _git_path(body.path), body.branch)

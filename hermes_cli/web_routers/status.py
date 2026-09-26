@@ -27,14 +27,22 @@ from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
+from hermes_cli.web_responses.base import ActionSpawnResponse
+from hermes_cli.web_responses.status import (
+    CuratorPausedResponse, CuratorStatusResponse, DebugShareResponse, HealthIdleResponse,
+    HealthResponse, HealthRetirementResponse, HostIdentityResponse, LearningGraphResponse,
+    LearningNodeDetailResponse, LearningNodeMutationResponse, LogsResponse, PortalStatusResponse,
+    SshOwnershipResponse, StatusResponse, SystemStatsResponse,
+)
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
 from typing import Any, Dict, Optional
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 # Mounted separately by web_server so /api/logs keeps its original route-table position.
-logs_router = APIRouter()
+logs_router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
@@ -103,7 +111,7 @@ async def _status_active_sessions() -> int:
     return 0
 
 
-@router.get("/api/ssh/ownership")
+@router.get("/api/ssh/ownership", responses={200: {"model": SshOwnershipResponse}})
 async def get_ssh_ownership(request: Request):
     from hermes_cli.web_server import _SSH_OWNER_NONCE
     _require_token(request)
@@ -113,7 +121,7 @@ async def get_ssh_ownership(request: Request):
             "runtimeIntact": _ssh_runtime_intact()}
 
 
-@router.get("/api/health")
+@router.get("/api/health", responses={200: {"model": HealthResponse}})
 async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes.
 
@@ -127,7 +135,7 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
-@router.get("/api/host/identity")
+@router.get("/api/host/identity", responses={200: {"model": HostIdentityResponse}})
 async def get_host_identity(request: Request):
     """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
 
@@ -146,7 +154,7 @@ async def get_host_identity(request: Request):
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
-@router.get("/api/health/idle")
+@router.get("/api/health/idle", responses={200: {"model": HealthIdleResponse}})
 async def get_health_idle(request: Request):
     """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
     from hermes_cli.web_server_idle_proof import idle_proof
@@ -154,7 +162,7 @@ async def get_health_idle(request: Request):
     return {"ok": True, **idle_proof()}
 
 
-@router.post("/api/health/retirement")
+@router.post("/api/health/retirement", responses={200: {"model": HealthRetirementResponse}})
 async def post_health_retirement(request: Request):
     from hermes_cli.backend_retirement import retirement
 
@@ -463,7 +471,7 @@ async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
         pass
 
 
-@router.get("/api/status")
+@router.get("/api/status", responses={200: {"model": StatusResponse}})
 async def get_status(profile: Optional[str] = None):
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
@@ -566,7 +574,7 @@ async def get_status(profile: Optional[str] = None):
             status_scope.__exit__(*sys.exc_info())
 
 
-@router.get("/api/system/stats")
+@router.get("/api/system/stats", responses={200: {"model": SystemStatsResponse}})
 async def get_system_stats():
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
@@ -626,7 +634,7 @@ async def get_system_stats():
 # Curator — background skill-maintenance status + the pause/resume/run-now controls.
 
 
-@router.get("/api/curator")
+@router.get("/api/curator", responses={200: {"model": CuratorStatusResponse}})
 async def get_curator_status(profile: Optional[str] = None):
     try:
         from agent import curator
@@ -646,7 +654,7 @@ async def get_curator_status(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.put("/api/curator/paused")
+@router.put("/api/curator/paused", responses={200: {"model": CuratorPausedResponse}})
 async def set_curator_paused(body: CuratorPause, profile: Optional[str] = None):
     from agent import curator
     # ``_state_file()`` is ``get_hermes_home()/skills/.curator_state`` resolved at call
@@ -665,7 +673,7 @@ def _spawn_action(argv: list, name: str, prefix: str, profile: Optional[str] = N
     return {"ok": True, "pid": proc.pid, "name": name}
 
 
-@router.post("/api/curator/run")
+@router.post("/api/curator/run", responses={200: {"model": ActionSpawnResponse}})
 async def run_curator(profile: Optional[str] = None):
     """Trigger a curator review now (backgrounded; tail via action status). The curator
     archives and rewrites skills, so an unnamed target is refused while this backend
@@ -674,7 +682,7 @@ async def run_curator(profile: Optional[str] = None):
                          destructive_profile(profile, "POST /api/curator/run"))
 
 
-@router.get("/api/learning/graph")
+@router.get("/api/learning/graph", responses={200: {"model": LearningGraphResponse}})
 async def get_learning_graph(profile: Optional[str] = None):
     """Learning graph for the desktop panel: profile-scoped learned skills + memory chunks."""
     def _run():
@@ -701,14 +709,14 @@ async def _learning_mutation(profile: Optional[str], fn, status: int, fallback: 
     return res
 
 
-@router.get("/api/learning/node")
+@router.get("/api/learning/node", responses={200: {"model": LearningNodeDetailResponse}})
 async def get_learning_node(id: str, profile: Optional[str] = None):
     """Current content of a journey node (skill SKILL.md or memory chunk), for an edit prefill."""
     from agent.learning_mutations import node_detail
     return await _learning_mutation(profile, lambda: node_detail(id), 404, "not found")
 
 
-@router.delete("/api/learning/node")
+@router.delete("/api/learning/node", responses={200: {"model": LearningNodeMutationResponse}})
 async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
     """Delete a journey node — skills are archived (restorable), memories removed.
 
@@ -719,7 +727,7 @@ async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = N
         body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
-@router.put("/api/learning/node")
+@router.put("/api/learning/node", responses={200: {"model": LearningNodeMutationResponse}})
 async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
     """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
     from agent.learning_mutations import edit_node
@@ -730,7 +738,7 @@ async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).
 
 
-@router.get("/api/portal")
+@router.get("/api/portal", responses={200: {"model": PortalStatusResponse}})
 async def get_portal_status(profile: Optional[str] = None):
     # load_config() + auth/subscription snapshots are disk reads on a polled endpoint —
     # keep them off the event loop.
@@ -780,22 +788,22 @@ def _get_portal_status_sync():
 # Diagnostics: text-output actions spawned in the background, tailed via /api/actions/<name>.
 
 
-@router.post("/api/ops/prompt-size")
+@router.post("/api/ops/prompt-size", responses={200: {"model": ActionSpawnResponse}})
 async def run_prompt_size(profile: Optional[str] = None):
     return _spawn_action(["prompt-size"], "prompt-size", "Failed", profile)
 
 
-@router.post("/api/ops/dump")
+@router.post("/api/ops/dump", responses={200: {"model": ActionSpawnResponse}})
 async def run_dump(profile: Optional[str] = None):
     return _spawn_action(["dump"], "dump", "Failed", profile)
 
 
-@router.post("/api/ops/config-migrate")
+@router.post("/api/ops/config-migrate", responses={200: {"model": ActionSpawnResponse}})
 async def run_config_migrate(profile: Optional[str] = None):
     return _spawn_action(["config", "migrate"], "config-migrate", "Failed", profile)
 
 
-@router.post("/api/ops/debug-share")
+@router.post("/api/ops/debug-share", responses={200: {"model": DebugShareResponse}})
 async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
                                    profile: Optional[str] = None):
     """Upload a redacted debug report + full logs and return the paste URLs. Synchronous,
@@ -822,7 +830,7 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}
 
 
-@logs_router.get("/api/logs")
+@logs_router.get("/api/logs", responses={200: {"model": LogsResponse}})
 async def get_logs(
     file: str = "agent", lines: int = 100, level: Optional[str] = None,
     component: Optional[str] = None, search: Optional[str] = None,

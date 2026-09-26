@@ -29,10 +29,15 @@ from hermes_cli.web_models import (
     TTSLeaseRequest,
     VoiceLiveSessionRequest,
 )
+from hermes_cli.web_responses.audio import (
+    AudioSpeakResponse, AudioTranscriptionResponse, ElevenLabsVoicesResponse, SttLeaseResponse, TtsLeaseResponse,
+    VoiceClientConfigResponse, VoiceLiveSessionResponse, VoiceLiveStatusResponse,
+)
 from typing import Any, Dict, Optional
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
@@ -83,7 +88,7 @@ def _audio_extension_for_mime(mime_type: str) -> str:
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
 
 
-@router.post("/api/audio/transcribe")
+@router.post("/api/audio/transcribe", responses={200: {"model": AudioTranscriptionResponse}})
 async def transcribe_audio_upload(
     payload: AudioTranscriptionRequest, profile: Optional[str] = None
 ):
@@ -146,7 +151,7 @@ async def transcribe_audio_upload(
     }
 
 
-@router.get("/api/audio/voice-config")
+@router.get("/api/audio/voice-config", responses={200: {"model": VoiceClientConfigResponse}})
 async def get_client_voice_config(profile: Optional[str] = None):
     """The active profile's STT/TTS config for CLIENT-DIRECT voice.
 
@@ -175,7 +180,7 @@ async def get_client_voice_config(profile: Optional[str] = None):
     return {"ok": True, **result}
 
 
-@router.get("/api/audio/voice-live/status")
+@router.get("/api/audio/voice-live/status", responses={200: {"model": VoiceLiveStatusResponse}})
 async def get_voice_live_status(profile: Optional[str] = None):
     """Which voice chat mode the profile selected (``chained`` | ``gpt-live``) and whether GPT-Live
     can start. Non-secret: the desktop decides which conversation engine to mount from this."""
@@ -185,7 +190,7 @@ async def get_voice_live_status(profile: Optional[str] = None):
     return {"ok": True, **result}
 
 
-@router.post("/api/audio/voice-live/session")
+@router.post("/api/audio/voice-live/session", responses={200: {"model": VoiceLiveSessionResponse}})
 async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
     """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
 
@@ -215,7 +220,7 @@ def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:
     return f"{name} ({category})" if category else name
 
 
-@router.get("/api/audio/elevenlabs/voices")
+@router.get("/api/audio/elevenlabs/voices", responses={200: {"model": ElevenLabsVoicesResponse}})
 async def get_elevenlabs_voices(profile: Optional[str] = None):
     """Return ElevenLabs voices when an API key is configured.
 
@@ -290,7 +295,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     return {"available": True, "voices": voices}
 
 
-@router.post("/api/audio/speak")
+@router.post("/api/audio/speak", responses={200: {"model": AudioSpeakResponse}})
 async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.
 
@@ -347,7 +352,7 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     }
 
 
-@router.post("/api/audio/tts-lease")
+@router.post("/api/audio/tts-lease", responses={200: {"model": TtsLeaseResponse}})
 async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
     """Desktop TTS-output toggles as warm-up / release signals.
 
@@ -479,7 +484,7 @@ def _ffmpeg_s16le_mono(path: str) -> tuple:
     return result.stdout, 24000
 
 
-@router.post("/api/audio/stt-lease")
+@router.post("/api/audio/stt-lease", responses={200: {"model": SttLeaseResponse}})
 async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
     """Desktop voice-input sessions as STT warm-up / release signals.
 

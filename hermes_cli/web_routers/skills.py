@@ -17,12 +17,19 @@ from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_iden
 from hermes_cli.web_models import (
     SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
     SkillsUpdateRequest)
+from hermes_cli.web_responses.base import ActionSpawnResponse
+from hermes_cli.web_responses.skills import (
+    SkillContentResponse, SkillContentUpdateResponse, SkillCreateResponse, SkillHubOfficialResponse,
+    SkillHubPreviewResponse, SkillHubScanResponse, SkillHubSearchResponse, SkillHubSourcesResponse,
+    SkillListRow, SkillToggleResponse,
+)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
     spawn_profile_action)
+from hermes_cli.web_responses.check import ContractRoute
 
-hub_router = APIRouter()
-router = APIRouter()
+hub_router = APIRouter(route_class=ContractRoute)
+router = APIRouter(route_class=ContractRoute)
 
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
@@ -94,7 +101,7 @@ def _clear_skills_prompt_cache() -> None:
         pass
 
 
-@hub_router.post("/api/skills/hub/install")
+@hub_router.post("/api/skills/hub/install", responses={200: {"model": ActionSpawnResponse}})
 async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = None):
     identifier = require(body.identifier, "identifier is required")
     return spawn_profile_action(
@@ -103,7 +110,7 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
         prefix="Failed to install skill")
 
 
-@hub_router.post("/api/skills/hub/uninstall")
+@hub_router.post("/api/skills/hub/uninstall", responses={200: {"model": ActionSpawnResponse}})
 async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str] = None):
     name = require(body.name, "name is required")
     return spawn_profile_action(
@@ -112,7 +119,7 @@ async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str
         prefix="Failed to uninstall skill")
 
 
-@hub_router.post("/api/skills/hub/update")
+@hub_router.post("/api/skills/hub/update", responses={200: {"model": ActionSpawnResponse}})
 async def update_skills_hub(
     body: Optional[SkillsUpdateRequest] = None, profile: Optional[str] = None):
     return spawn_profile_action(
@@ -120,7 +127,7 @@ async def update_skills_hub(
         log_msg="Failed to spawn skills update", prefix="Failed to update skills")
 
 
-@hub_router.get("/api/skills/hub/official")
+@hub_router.get("/api/skills/hub/official", responses={200: {"model": SkillHubOfficialResponse}})
 async def list_official_skills(profile: Optional[str] = None):
     """The ENTIRE optional-skills catalog (local scan), marked installed for ``profile``."""
 
@@ -144,7 +151,7 @@ async def list_official_skills(profile: Optional[str] = None):
         return await asyncio.to_thread(_run)
 
 
-@hub_router.get("/api/skills/hub/sources")
+@hub_router.get("/api/skills/hub/sources", responses={200: {"model": SkillHubSourcesResponse}})
 async def list_skills_hub_sources(profile: Optional[str] = None):
     """Configured skill-hub sources + installed-skill provenance (scoped to
     ``profile``), so the Browse-hub tab has something before a search runs."""
@@ -182,7 +189,7 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
         return await asyncio.to_thread(_run)
 
 
-@hub_router.get("/api/skills/hub/search")
+@hub_router.get("/api/skills/hub/search", responses={200: {"model": SkillHubSearchResponse}})
 async def search_skills_hub(
     q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None):
     """Search the skill hub across all configured sources (network-bound)."""
@@ -224,7 +231,7 @@ async def _hub_lookup(fn, ident: str, log_msg: str, prefix: str):
     return result
 
 
-@hub_router.get("/api/skills/hub/preview")
+@hub_router.get("/api/skills/hub/preview", responses={200: {"model": SkillHubPreviewResponse}})
 async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None):
     """A hub skill's SKILL.md + file manifest WITHOUT installing it; scoped to
     ``profile`` so different hub taps resolve against THAT source router."""
@@ -262,7 +269,7 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
     return await _hub_lookup(_run, ident, "skills hub preview failed", "Hub preview failed")
 
 
-@hub_router.get("/api/skills/hub/scan")
+@hub_router.get("/api/skills/hub/scan", responses={200: {"model": SkillHubScanResponse}})
 async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     """Install-time security scan of a hub skill WITHOUT installing it (the CLI's
     ``scan_skill`` / ``should_allow_install`` pipeline on a quarantined bundle);
@@ -340,7 +347,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     return await _hub_lookup(_run, ident, "skills hub scan failed", "Hub scan failed")
 
 
-@router.get("/api/skills")
+@router.get("/api/skills", responses={200: {"model": list[SkillListRow]}})
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
@@ -376,7 +383,7 @@ async def get_skills(profile: Optional[str] = None):
     return await asyncio.to_thread(_run)
 
 
-@router.put("/api/skills/toggle")
+@router.put("/api/skills/toggle", responses={200: {"model": SkillToggleResponse}})
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
@@ -394,7 +401,7 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     return await asyncio.to_thread(_run)
 
 
-@router.get("/api/skills/content")
+@router.get("/api/skills/content", responses={200: {"model": SkillContentResponse}})
 async def get_skill_content(name: str, profile: Optional[str] = None):
     """Raw SKILL.md text for the dashboard editor."""
     from tools.skill_manager_tool import _find_skill
@@ -415,7 +422,7 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
     return await scoped_to_thread(profile, _read)
 
 
-@router.post("/api/skills")
+@router.post("/api/skills", responses={200: {"model": SkillCreateResponse}})
 async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
     write-approval gate — an authenticated dashboard write IS the user.
@@ -430,7 +437,7 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     return result
 
 
-@router.put("/api/skills/content")
+@router.put("/api/skills/content", responses={200: {"model": SkillContentUpdateResponse}})
 async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] = None):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
     from tools.skill_manager_tool import _edit_skill

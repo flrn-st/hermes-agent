@@ -34,8 +34,15 @@ from hermes_cli.web_server_files import (
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
 )
+from hermes_cli.web_responses.files import (
+    MANAGED_FILE_DOWNLOAD_RESPONSES, MANAGED_FILE_STREAM_RESPONSES, ChatImageUploadResponse,
+    FsDataUrlResponse, FsDefaultCwdResponse, FsGitRootResponse, FsListResponse, FsReadTextResponse,
+    FsWriteTextResponse, ManagedFileDeleteResponse, ManagedFileListResponse,
+    ManagedFileReadResponse, ManagedFileWriteResponse, MediaDataUrlResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
@@ -326,7 +333,7 @@ def _read_base64_file(path: Path) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-@router.get("/api/media")
+@router.get("/api/media", responses={200: {"model": MediaDataUrlResponse}})
 async def get_media(path: str):
     """Return a gateway-local image as a base64 data URL for remote clients
     that can't read this machine's disk. Auth-gated; restricted to the image
@@ -370,7 +377,7 @@ def _media_proxy_host_allowed(host: str) -> bool:
     )
 
 
-@router.get("/api/media/proxy")
+@router.get("/api/media/proxy", responses={200: {"model": MediaDataUrlResponse}})
 async def proxy_remote_media(url: str, request: Request):
     """Fetch a remote image URL the gateway can reach but the client cannot
     (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
@@ -467,7 +474,7 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
     return data, mime_type, ext
 
 
-@router.post("/api/chat/image-upload")
+@router.post("/api/chat/image-upload", responses={200: {"model": ChatImageUploadResponse}})
 async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
     """Persist a browser clipboard image where the embedded TUI can read it.
 
@@ -505,7 +512,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     return await asyncio.to_thread(_run)
 
 
-@router.get("/api/files")
+@router.get("/api/files", responses={200: {"model": ManagedFileListResponse}})
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
@@ -558,7 +565,7 @@ def _managed_file_size(target: Path, max_bytes: int) -> int:
     return size
 
 
-@router.get("/api/files/read")
+@router.get("/api/files/read", responses={200: {"model": ManagedFileReadResponse}})
 async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
@@ -596,7 +603,7 @@ async def _managed_file_response(
     )
 
 
-@router.get("/api/files/download")
+@router.get("/api/files/download", response_class=FileResponse, responses=MANAGED_FILE_DOWNLOAD_RESPONSES)
 async def download_managed_file(request: Request, path: str):
     """Stream a managed file as an attachment download.
 
@@ -616,8 +623,8 @@ async def download_managed_file(request: Request, path: str):
     )
 
 
-@router.get("/api/files/stream")
-@router.head("/api/files/stream")
+@router.get("/api/files/stream", response_class=FileResponse, responses=MANAGED_FILE_STREAM_RESPONSES)
+@router.head("/api/files/stream", response_class=FileResponse, responses=MANAGED_FILE_STREAM_RESPONSES)
 async def stream_managed_file(request: Request, path: str):
     """Stream managed audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
@@ -644,7 +651,7 @@ def _managed_write_result(policy, target: Path, display_path: str) -> dict:
     }
 
 
-@router.post("/api/files/upload")
+@router.post("/api/files/upload", responses={200: {"model": ManagedFileWriteResponse}})
 async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _managed_write_target(payload.path, request, payload.overwrite)
     data, _mime_type = _decode_data_url(payload.data_url)
@@ -698,7 +705,7 @@ async def stream_upload_to_path(
     return total
 
 
-@router.post("/api/files/upload-stream")
+@router.post("/api/files/upload-stream", responses={200: {"model": ManagedFileWriteResponse}})
 async def upload_managed_file_stream(
     request: Request,
     file: UploadFile = File(...),
@@ -719,7 +726,7 @@ async def upload_managed_file_stream(
     return _managed_write_result(policy, target, display_path)
 
 
-@router.post("/api/files/mkdir")
+@router.post("/api/files/mkdir", responses={200: {"model": ManagedFileWriteResponse}})
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if target.exists() and not target.is_dir():
@@ -729,7 +736,7 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
     return _managed_write_result(policy, target, display_path)
 
 
-@router.delete("/api/files")
+@router.delete("/api/files", responses={200: {"model": ManagedFileDeleteResponse}})
 async def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
     if policy.locked_root is not None and target == policy.locked_root:
@@ -760,7 +767,7 @@ _FS_LIST_ERRNO = (
 )
 
 
-@router.get("/api/fs/list")
+@router.get("/api/fs/list", responses={200: {"model": FsListResponse}})
 async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
@@ -790,7 +797,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
         return {"entries": [], "error": getattr(exc, "strerror", None) or "read-error"}
 
 
-@router.get("/api/fs/read-text")
+@router.get("/api/fs/read-text", responses={200: {"model": FsReadTextResponse}})
 async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
@@ -832,7 +839,7 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
     }
 
 
-@router.post("/api/fs/write-text")
+@router.post("/api/fs/write-text", responses={200: {"model": FsWriteTextResponse}})
 async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
@@ -905,7 +912,7 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
     return _fs_path(path)
 
 
-@router.get("/api/fs/read-data-url")
+@router.get("/api/fs/read-data-url", responses={200: {"model": FsDataUrlResponse}})
 async def fs_read_data_url(
     path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
@@ -931,7 +938,7 @@ async def fs_read_data_url(
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
-@router.get("/api/fs/download")
+@router.get("/api/fs/download", response_class=FileResponse, responses=MANAGED_FILE_DOWNLOAD_RESPONSES)
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
@@ -962,7 +969,7 @@ async def fs_download(
     )
 
 
-@router.get("/api/fs/git-root")
+@router.get("/api/fs/git-root", responses={200: {"model": FsGitRootResponse}})
 async def fs_git_root(path: str, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
@@ -979,7 +986,7 @@ async def fs_git_root(path: str, profile: Optional[str] = None):
     return {"root": _fs_find_git_root(start)}
 
 
-@router.get("/api/fs/default-cwd")
+@router.get("/api/fs/default-cwd", responses={200: {"model": FsDefaultCwdResponse}})
 async def fs_default_cwd(profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:

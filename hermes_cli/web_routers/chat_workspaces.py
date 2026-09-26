@@ -16,9 +16,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import late
+from hermes_cli.web_responses.chat_workspaces import ChatWorkspacesResponse
 from hermes_cli.web_routers._common import http_failure, scoped_to_thread
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
 
@@ -69,7 +71,7 @@ def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
         "home": str(Path.home()), "scan_enabled": bool(policy["enabled"])}
 
 
-@router.get("/api/chat/workspaces")
+@router.get("/api/chat/workspaces", responses={200: {"model": ChatWorkspacesResponse}})
 async def get_chat_workspaces(profile: Optional[str] = None, scan: bool = False):
     """Projects + discovered repos a fresh chat may start in; ``scan=1`` rescans the
     configured discovery roots on the host first (headless installs have no Desktop to do it)."""

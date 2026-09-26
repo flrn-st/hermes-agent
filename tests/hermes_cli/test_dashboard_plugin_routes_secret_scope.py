@@ -66,7 +66,10 @@ def _stub_action(monkeypatch, name: str, seen: dict, result: dict | None = None)
 
 def test_install_route_reads_the_git_credential_in_profile_scope(client, multiplexed, monkeypatch):
     seen: dict = {}
-    _stub_action(monkeypatch, "dashboard_install_plugin", seen)
+    _stub_action(monkeypatch, "dashboard_install_plugin", seen, result={
+        "ok": True, "plugin_name": "repo", "warnings": [], "python_dependencies": [], "missing_env": [],
+        "enabled": False, "gateway_reloaded": False, "activation": None, "restart_required": False,
+        "known_issues": []})
 
     resp = client.post("/api/dashboard/agent-plugins/install", json={"identifier": "owner/repo"})
 

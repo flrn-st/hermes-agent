@@ -34,9 +34,19 @@ from hermes_cli.web_routers._common import (
     spawn_profile_action,
 )
 from hermes_cli.web_routers.files import stream_upload_to_path
+from hermes_cli.web_responses.base import ActionSpawnResponse, OkResponse, binary_body
+from hermes_cli.web_responses.ops import (
+    CredentialPoolAddResponse, CredentialPoolListResponse,
+    CredentialPoolRemoveResponse, MemoryProviderSelectResponse, MemoryResetResponse,
+    MemoryStatusResponse, OpsBackupResponse, OpsCheckpointListResponse, OpsImportUploadResponse,
+    OpsShellHookCreateResponse, OpsShellHookListResponse, UserPairingApproveResponse,
+    UserPairingClearResponse, UserPairingListResponse, WebhookCreateResponse, WebhookEnableResponse,
+    WebhookEnabledToggleResponse, WebhookListResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_cli.web_server_memory")
@@ -81,13 +91,13 @@ def _pairing_store(profile: Optional[str] = None):
     return PairingStore(profile=requested)
 
 
-@router.get("/api/pairing")
+@router.get("/api/pairing", responses={200: {"model": UserPairingListResponse}})
 async def list_pairing(profile: Optional[str] = None):
     store = _pairing_store(profile)
     return {"pending": store.list_pending(), "approved": store.list_approved()}
 
 
-@router.post("/api/pairing/approve")
+@router.post("/api/pairing/approve", responses={200: {"model": UserPairingApproveResponse}})
 async def approve_pairing(body: PairingApprove):
     store = _pairing_store(body.profile)
     platform = (body.platform or "").lower().strip()
@@ -113,7 +123,7 @@ async def approve_pairing(body: PairingApprove):
     )
 
 
-@router.post("/api/pairing/revoke")
+@router.post("/api/pairing/revoke", responses={200: {"model": OkResponse}})
 async def revoke_pairing(body: PairingRevoke):
     store = _pairing_store(body.profile)
     platform = (body.platform or "").lower().strip()
@@ -124,7 +134,7 @@ async def revoke_pairing(body: PairingRevoke):
     raise HTTPException(status_code=404, detail=f"User {body.user_id} not found in approved list for {platform}.")
 
 
-@router.post("/api/pairing/clear-pending")
+@router.post("/api/pairing/clear-pending", responses={200: {"model": UserPairingClearResponse}})
 async def clear_pending_pairing(profile: Optional[str] = None):
     return {"ok": True, "cleared": _pairing_store(profile).clear_pending()}
 
@@ -151,7 +161,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
     }
 
 
-@router.get("/api/webhooks")
+@router.get("/api/webhooks", responses={200: {"model": WebhookListResponse}})
 async def list_webhooks(profile: Optional[str] = None):
     def _run():
         import hermes_cli.webhook as wh
@@ -169,7 +179,7 @@ async def list_webhooks(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.post("/api/webhooks/enable")
+@router.post("/api/webhooks/enable", responses={200: {"model": WebhookEnableResponse}})
 async def enable_webhooks(profile: Optional[str] = None):
     def _run():
         with config_write_scope(profile):
@@ -187,7 +197,7 @@ async def enable_webhooks(profile: Optional[str] = None):
     }
 
 
-@router.post("/api/webhooks")
+@router.post("/api/webhooks", responses={200: {"model": WebhookCreateResponse}})
 async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
 
@@ -251,7 +261,7 @@ def _webhook_key_in(subscriptions: dict[str, dict], name: str) -> str:
     return key
 
 
-@router.delete("/api/webhooks/{name}")
+@router.delete("/api/webhooks/{name}", responses={200: {"model": OkResponse}})
 async def delete_webhook(name: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
 
@@ -267,7 +277,7 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
     return {"ok": True}
 
 
-@router.put("/api/webhooks/{name}/enabled")
+@router.put("/api/webhooks/{name}/enabled", responses={200: {"model": WebhookEnabledToggleResponse}})
 async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Optional[str] = None):
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
@@ -289,7 +299,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
 # matches the CLI exactly (status is surfaced by /api/status).
 
 
-@router.post("/api/gateway/start")
+@router.post("/api/gateway/start", responses={200: {"model": ActionSpawnResponse}})
 async def start_gateway(profile: Optional[str] = None):
     from hermes_cli.web_server_gateway import multiplexed_profile_refusal
     # The spawned `hermes -p X gateway start` would refuse with exit 78 into an action log nobody reads;
@@ -302,7 +312,7 @@ async def start_gateway(profile: Optional[str] = None):
     return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
 
 
-@router.post("/api/gateway/stop")
+@router.post("/api/gateway/stop", responses={200: {"model": ActionSpawnResponse}})
 async def stop_gateway(profile: Optional[str] = None):
     from hermes_cli.web_server_gateway import multiplexed_profile_refusal
     # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
@@ -341,7 +351,7 @@ def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
     }
 
 
-@router.get("/api/credentials/pool")
+@router.get("/api/credentials/pool", responses={200: {"model": CredentialPoolListResponse}})
 async def list_credential_pool(profile: Optional[str] = None):
     from agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
@@ -370,7 +380,7 @@ async def list_credential_pool(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.post("/api/credentials/pool")
+@router.post("/api/credentials/pool", responses={200: {"model": CredentialPoolAddResponse}})
 async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[str] = None):
     import uuid
     from agent.credential_pool import (
@@ -428,7 +438,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.delete("/api/credentials/pool/{provider}/{index}")
+@router.delete("/api/credentials/pool/{provider}/{index}", responses={200: {"model": CredentialPoolRemoveResponse}})
 async def remove_credential_pool_entry(provider: str, index: int, profile: Optional[str] = None):
     """Remove a pool entry (``index`` is 1-based, as listed).
 
@@ -488,7 +498,7 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
 _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 
 
-@router.get("/api/memory")
+@router.get("/api/memory", responses={200: {"model": MemoryStatusResponse}})
 async def get_memory_status(profile: Optional[str] = None):
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
         cfg = load_config()
@@ -504,7 +514,7 @@ async def get_memory_status(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.put("/api/memory/provider")
+@router.put("/api/memory/provider", responses={200: {"model": MemoryProviderSelectResponse}})
 async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str] = None):
     provider = _normalize_memory_provider_name(body.provider)
 
@@ -525,7 +535,7 @@ async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str]
     return await asyncio.to_thread(_run)
 
 
-@router.post("/api/memory/reset")
+@router.post("/api/memory/reset", responses={200: {"model": MemoryResetResponse}})
 async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
     target = (body.target or "all").strip().lower()
     if target not in {"all", "memory", "user"}:
@@ -553,13 +563,13 @@ async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
 # /api/actions/{name}/status; cheap structured reads return JSON directly.
 
 
-@router.post("/api/ops/doctor")
+@router.post("/api/ops/doctor", responses={200: {"model": ActionSpawnResponse}})
 async def run_doctor(profile: Optional[str] = None):
     return _spawn_action(["doctor"], "doctor", log_msg="Failed to spawn doctor",
                          prefix="Failed to run doctor", profile=profile)
 
 
-@router.post("/api/ops/security-audit")
+@router.post("/api/ops/security-audit", responses={200: {"model": ActionSpawnResponse}})
 async def run_security_audit(profile: Optional[str] = None):
     return _spawn_action(
         ["security", "audit"], "security-audit",
@@ -573,7 +583,7 @@ def _dashboard_backup_dir(profile: Optional[str] = None) -> Path:
         return get_hermes_home() / "backups"
 
 
-@router.post("/api/ops/backup")
+@router.post("/api/ops/backup", responses={200: {"model": OpsBackupResponse}})
 async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     archive: Optional[Path] = None
     output = (body.output or "").strip()
@@ -592,7 +602,10 @@ async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     return response
 
 
-@router.get("/api/ops/backup/download")
+@router.get(
+    "/api/ops/backup/download", response_class=FileResponse,
+    responses={200: binary_body("The backup archive.", "application/zip")},
+)
 async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
     try:
         backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
@@ -619,7 +632,7 @@ def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> d
                          prefix="Failed to run import", profile=profile)
 
 
-@router.post("/api/ops/import")
+@router.post("/api/ops/import", responses={200: {"model": ActionSpawnResponse}})
 async def run_import(body: ImportRequest, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/ops/import")
     archive = (body.archive or "").strip()
@@ -638,7 +651,7 @@ def _safe_backup_upload_name(filename: str | None) -> str:
     return name
 
 
-@router.post("/api/ops/import-upload")
+@router.post("/api/ops/import-upload", responses={200: {"model": OpsImportUploadResponse}})
 async def run_import_upload(
     file: UploadFile = File(...),
     force: bool = Form(False),
@@ -663,7 +676,7 @@ async def run_import_upload(
     return {**_spawn_import(str(target), force, profile), "archive": str(target), "uploaded_bytes": total}
 
 
-@router.get("/api/ops/hooks")
+@router.get("/api/ops/hooks", responses={200: {"model": OpsShellHookListResponse}})
 async def list_hooks(profile: Optional[str] = None):
     """Configured shell hooks with consent (allowlist) status, whether the
     script is currently executable, and the valid hook events for the form."""
@@ -712,7 +725,7 @@ def _hook_body_fields(body) -> tuple[str, str]:
     return event, command
 
 
-@router.post("/api/ops/hooks")
+@router.post("/api/ops/hooks", responses={200: {"model": OpsShellHookCreateResponse}})
 async def create_hook(body: HookCreate, profile: Optional[str] = None):
     """Add a shell hook to config.yaml and optionally record consent.
 
@@ -763,7 +776,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.delete("/api/ops/hooks")
+@router.delete("/api/ops/hooks", responses={200: {"model": OkResponse}})
 async def delete_hook(body: HookDelete, profile: Optional[str] = None):
     """Remove a hook from config.yaml and revoke its consent allowlist entry."""
     from agent import shell_hooks
@@ -798,7 +811,7 @@ async def delete_hook(body: HookDelete, profile: Optional[str] = None):
     return {"ok": True}
 
 
-@router.get("/api/ops/checkpoints")
+@router.get("/api/ops/checkpoints", responses={200: {"model": OpsCheckpointListResponse}})
 async def list_checkpoints(profile: Optional[str] = None):
     """/rollback shadow-store checkpoints (read-only): count + size per session
     so the UI can show what a prune reclaims; pruning itself is a spawned CLI
@@ -828,7 +841,7 @@ async def list_checkpoints(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _run)
 
 
-@router.post("/api/ops/checkpoints/prune")
+@router.post("/api/ops/checkpoints/prune", responses={200: {"model": ActionSpawnResponse}})
 async def prune_checkpoints(profile: Optional[str] = None):
     return _spawn_action(
         ["checkpoints", "prune"], "checkpoints-prune",

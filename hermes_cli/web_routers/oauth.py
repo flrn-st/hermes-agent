@@ -24,10 +24,15 @@ from hermes_cli.web_server_oauth import (
     _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
 )
 from hermes_cli.web_models import OAuthSubmitBody
+from hermes_cli.web_responses.oauth import (
+    OAuthDeviceCodeStartResponse, OAuthDisconnectResponse, OAuthProviderListResponse,
+    OAuthSessionCancelResponse, OAuthSessionPollResponse,
+)
 from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
@@ -685,7 +690,7 @@ def _build_oauth_catalog() -> list[dict[str, Any]]:
     return rows
 
 
-@router.get("/api/providers/oauth")
+@router.get("/api/providers/oauth", responses={200: {"model": OAuthProviderListResponse}})
 async def list_oauth_providers(profile: Optional[str] = None):
     """Every OAuth-capable provider with current status (token_preview is the last
     N chars, never the full token; disconnect_command only for external providers)."""
@@ -741,7 +746,7 @@ def _disconnect_http_error(status_code: int, provider_name: str) -> HTTPExceptio
     return HTTPException(status_code=status_code, detail=detail)
 
 
-@router.delete("/api/providers/oauth/{provider_id}")
+@router.delete("/api/providers/oauth/{provider_id}", responses={200: {"model": OAuthDisconnectResponse}})
 async def disconnect_oauth_provider(provider_id: str, request: Request, profile: Optional[str] = None):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
     _require_token(request)
@@ -808,7 +813,7 @@ def _validate_oauth_profile(profile: Optional[str]) -> str:
     return profile_name
 
 
-@router.post("/api/providers/oauth/{provider_id}/start")
+@router.post("/api/providers/oauth/{provider_id}/start", responses={200: {"model": OAuthDeviceCodeStartResponse}})
 async def start_oauth_login(provider_id: str, request: Request, profile: Optional[str] = None):
     """Initiate an OAuth login flow. Token-protected."""
     _require_token(request)
@@ -861,7 +866,8 @@ async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
         await asyncio.to_thread(finish_provider_setup, flow, "failed", failure)
 
 
-@router.post("/api/providers/oauth/{provider_id}/submit")
+@router.post("/api/providers/oauth/{provider_id}/submit", responses={
+    400: {"description": "Always: no dashboard provider offers a code-submit (PKCE) flow."}})
 async def submit_oauth_code(
     provider_id: str, body: OAuthSubmitBody, request: Request, profile: Optional[str] = None,
 ):
@@ -870,7 +876,8 @@ async def submit_oauth_code(
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
 
 
-@router.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
+@router.get("/api/providers/oauth/{provider_id}/poll/{session_id}",
+            responses={200: {"model": OAuthSessionPollResponse}})
 async def poll_oauth_session(provider_id: str, session_id: str, profile: Optional[str] = None):
     """Poll a session's status (no auth — read-only state). One endpoint serves
     every device-code flow: all report progress via the worker-updated ``status``."""
@@ -894,7 +901,7 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
     }
 
 
-@router.delete("/api/providers/oauth/sessions/{session_id}")
+@router.delete("/api/providers/oauth/sessions/{session_id}", responses={200: {"model": OAuthSessionCancelResponse}})
 async def cancel_oauth_session(session_id: str, request: Request, profile: Optional[str] = None):
     """Cancel a pending OAuth session. Token-protected.
 

@@ -23,6 +23,11 @@ from hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.cron import (
+    CronBlueprintsResponse, CronDeliveryTargetsResponse, CronFireErrorResponse, CronFireResponse,
+    CronJob, CronJobRunsResponse,
+)
 from hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
 from hermes_constants import (
@@ -30,8 +35,9 @@ from hermes_constants import (
     reset_hermes_home_override as _reset_hermes_home_override,
     set_hermes_home_override as _set_hermes_home_override,
 )
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _find_cron_job_profile = late("_find_cron_job_profile", "hermes_cli.web_server_cron")
 _fire_cron_job_for_profile = late("_fire_cron_job_for_profile", "hermes_cli.web_server_cron")
@@ -665,27 +671,27 @@ def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
 _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 
 
-@router.get("/api/cron/jobs")
+@router.get("/api/cron/jobs", responses={200: {"model": list[CronJob]}})
 async def list_cron_jobs(profile: str = "all"):
     return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
 
 
-@router.get("/api/cron/jobs/{job_id}")
+@router.get("/api/cron/jobs/{job_id}", responses={200: {"model": CronJob}})
 async def get_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
 
 
-@router.get("/api/cron/jobs/{job_id}/runs")
+@router.get("/api/cron/jobs/{job_id}/runs", responses={200: {"model": CronJobRunsResponse}})
 async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
-@router.post("/api/cron/jobs")
+@router.post("/api/cron/jobs", responses={200: {"model": CronJob}})
 async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
 
 
-@router.get("/api/cron/delivery-targets")
+@router.get("/api/cron/delivery-targets", responses={200: {"model": CronDeliveryTargetsResponse}})
 async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets for the cron dropdown: implicit ``local`` plus the
     configured gateway platforms (a platform without a cron home channel is
@@ -711,32 +717,35 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
     return {"targets": targets}
 
 
-@router.put("/api/cron/jobs/{job_id}")
+@router.put("/api/cron/jobs/{job_id}", responses={200: {"model": CronJob}})
 async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
 
 
-@router.post("/api/cron/jobs/{job_id}/pause")
+@router.post("/api/cron/jobs/{job_id}/pause", responses={200: {"model": CronJob}})
 async def pause_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
 
 
-@router.post("/api/cron/jobs/{job_id}/resume")
+@router.post("/api/cron/jobs/{job_id}/resume", responses={200: {"model": CronJob}})
 async def resume_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
 
 
-@router.post("/api/cron/jobs/{job_id}/trigger")
+@router.post("/api/cron/jobs/{job_id}/trigger", responses={200: {"model": CronJob}})
 async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
-@router.delete("/api/cron/jobs/{job_id}")
+@router.delete("/api/cron/jobs/{job_id}", responses={200: {"model": OkResponse}})
 async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
-@router.post("/api/cron/fire")
+@router.post("/api/cron/fire", responses={
+    200: {"model": CronFireResponse}, 202: {"model": CronFireResponse}, 400: {"model": CronFireErrorResponse},
+    401: {"model": CronFireErrorResponse}, 503: {"model": CronFireErrorResponse},
+})
 async def cron_fire_webhook(request: Request):
     """Chronos managed-cron fire webhook (NAS -> agent) — gateway forwarder.
 
@@ -855,7 +864,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     return entries
 
 
-@router.get("/api/cron/blueprints")
+@router.get("/api/cron/blueprints", responses={200: {"model": CronBlueprintsResponse}})
 async def list_cron_blueprints(profile: Optional[str] = None):
     """Blueprint catalog (built-ins + the profile's plugin blueprints) as form schemas."""
     try:
@@ -874,7 +883,7 @@ def _blueprint_for_profile(key: str, profile: Optional[str]):
         return get_blueprint(key)
 
 
-@router.post("/api/cron/blueprints/instantiate")
+@router.post("/api/cron/blueprints/instantiate", responses={200: {"model": CronJob}})
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:

@@ -21,11 +21,17 @@ from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_bu
 from hermes_cli.version_info import get_version_info
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
+from hermes_cli.web_responses.base import ActionSpawnResponse
+from hermes_cli.web_responses.actions import (
+    ActionStatusResponse, GatewayDrainResponse, GatewayMigrationPlanResponse,
+    HermesUpdateCheckResponse, HermesUpdateStartResponse, UpdateReceiptResponse,
+)
 from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-router = APIRouter()
-status_router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
+status_router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
@@ -157,7 +163,7 @@ def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
     return None
 
 
-@router.post("/api/gateway/restart")
+@router.post("/api/gateway/restart", responses={200: {"model": ActionSpawnResponse}})
 async def restart_gateway(profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart`` in the background."""
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
@@ -165,7 +171,7 @@ async def restart_gateway(profile: Optional[str] = None):
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
 
 
-@router.get("/api/gateway/migrate/plan")
+@router.get("/api/gateway/migrate/plan", responses={200: {"model": GatewayMigrationPlanResponse}})
 async def gateway_migrate_plan():
     """Preflight for folding per-profile gateways into one multiplexer (same JSON as the CLI plan)."""
     from hermes_cli.gateway_migrate import build_migration_plan
@@ -173,7 +179,7 @@ async def gateway_migrate_plan():
     return plan.to_dict()
 
 
-@router.post("/api/gateway/migrate")
+@router.post("/api/gateway/migrate", responses={200: {"model": ActionSpawnResponse}})
 async def gateway_migrate():
     """Run ``hermes gateway migrate --multiplex --yes`` detached; the CLI re-runs the preflight and
     refuses (exit 1 into the action log) when blocked, so the UI should gate on the plan first."""
@@ -183,7 +189,7 @@ async def gateway_migrate():
     return {"ok": True, "pid": proc.pid, "name": "gateway-migrate"}
 
 
-@router.post("/api/gateway/drain")
+@router.post("/api/gateway/drain", responses={200: {"model": GatewayDrainResponse}})
 async def gateway_drain(request: Request):
     """Begin or cancel an external (NAS-driven) gateway drain.
 
@@ -237,7 +243,7 @@ def _update_refused(error: str, message: str, update_command: str) -> dict[str, 
     }
 
 
-@router.post("/api/hermes/update")
+@router.post("/api/hermes/update", responses={200: {"model": HermesUpdateStartResponse}})
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
     if is_commit_build(_server_path("PROJECT_ROOT")):
@@ -280,7 +286,7 @@ _NON_APPLYABLE_MESSAGES = {
 }
 
 
-@router.get("/api/hermes/update/check")
+@router.get("/api/hermes/update/check", responses={200: {"model": HermesUpdateCheckResponse}})
 async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
 
@@ -370,7 +376,7 @@ def _completed_exit_code(
     return None
 
 
-@status_router.get("/api/actions/{name}/status")
+@status_router.get("/api/actions/{name}/status", responses={200: {"model": ActionStatusResponse}})
 async def get_action_status(name: str, lines: int = 200):
     """Tail an action log and report whether the process is still running."""
     log_file_name = _ACTION_LOG_FILES.get(name)
@@ -476,7 +482,7 @@ def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[
         return None
 
 
-@status_router.get("/api/hermes/update/receipt")
+@status_router.get("/api/hermes/update/receipt", responses={200: {"model": UpdateReceiptResponse}})
 async def get_update_receipt():
     """The FULL latest update receipt (steps, skips, gateway restart outcome, fleet
     matrix) plus a compact ``summary``; 404 when no update has run since receipts landed.

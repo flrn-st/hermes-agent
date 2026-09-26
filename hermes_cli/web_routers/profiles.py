@@ -36,6 +36,15 @@ from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
 )
 from hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.profiles import (
+    ProfileActiveResponse, ProfileCreateResponse, ProfileDeleteResponse,
+    ProfileDescribeAutoResponse, ProfileDescriptionResponse, ProfileDesktopOverlayResponse,
+    ProfileExportResponse, ProfileImportResponse, ProfileListResponse, ProfileModelResponse,
+    ProfileOpenTerminalResponse, ProfileProjectsTreeResponse, ProfileRenameResponse,
+    ProfileSessionPullRequestsResponse, ProfileSessionsResponse, ProfileSessionsSidebarResponse,
+    ProfileSetActiveResponse, ProfileSetupCommandResponse, ProfileSoulResponse,
+)
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
@@ -48,6 +57,7 @@ from hermes_cli.web_models import (
     ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileModelUpdate, ProfileDescribeAuto,
     SessionPrScanBody)
 from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+from hermes_cli.web_responses.check import ContractRoute
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -68,8 +78,8 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
     _log.warning("profile session read failed for %r (reported only in the response "
                  "errors array): %s", profile, exc)
 
-sessions_router = APIRouter()
-router = APIRouter()
+sessions_router = APIRouter(route_class=ContractRoute)
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound web_server helpers (resolved at call time; cycle-safe, monkeypatch-transparent).
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
@@ -450,7 +460,7 @@ def _csv_list(value: Optional[str]) -> list[str]:
     return [s.strip() for s in (value or "").split(",") if s.strip()]
 
 
-@sessions_router.get("/api/profiles/sessions")
+@sessions_router.get("/api/profiles/sessions", responses={200: {"model": ProfileSessionsResponse}})
 def get_profiles_sessions(
     # ``le=500`` caps the page size — this endpoint fans out across EVERY profile's state.db.
     # 500 (not 100) because desktop callers use limit=200 and the electron remote-merge
@@ -511,7 +521,7 @@ def get_profiles_sessions(
             "storage": _corrupt_profile_stores(targets)}
 
 
-@sessions_router.get("/api/profiles/sessions/sidebar")
+@sessions_router.get("/api/profiles/sessions/sidebar", responses={200: {"model": ProfileSessionsSidebarResponse}})
 @_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str | None = None,
@@ -706,7 +716,7 @@ def _merge_profile_tree(
         existing["previewSessions"] = previews[:preview_limit]
 
 
-@sessions_router.get("/api/profiles/projects/tree")
+@sessions_router.get("/api/profiles/projects/tree", responses={200: {"model": ProfileProjectsTreeResponse}})
 @_sidebar_singleflight_cache
 def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000, profile: Optional[str] = None):
     """Project tree for every profile at once, for the all-profiles sidebar.
@@ -759,7 +769,8 @@ def _pr_url_from_tool_output(content: str) -> Optional[tuple[int, str]]:
     return (int(match.group(1)), match.group(0)) if match else None
 
 
-@sessions_router.post("/api/profiles/sessions/pull-requests")
+@sessions_router.post("/api/profiles/sessions/pull-requests",
+                      responses={200: {"model": ProfileSessionPullRequestsResponse}})
 def post_profiles_sessions_pull_requests(body: SessionPrScanBody, profile: Optional[str] = None):
     """The PR each of these sessions opened, recovered from its own transcript: a session
     that starts in the main checkout and works in a worktree has no branch of its own, so
@@ -797,12 +808,12 @@ def _read_profiles():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
-@router.get("/api/profiles")
+@router.get("/api/profiles", responses={200: {"model": ProfileListResponse}})
 async def list_profiles_endpoint():
     return await _read_profiles()
 
 
-@router.post("/api/profiles")
+@router.post("/api/profiles", responses={200: {"model": ProfileCreateResponse}})
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
     explicit_source = (body.clone_from or "").strip()
@@ -875,7 +886,7 @@ async def create_profile_endpoint(body: ProfileCreate):
             "hub_installs": hub_installs, "soul_set": body.soul is not None}
 
 
-@router.get("/api/profiles/active")
+@router.get("/api/profiles/active", responses={200: {"model": ProfileActiveResponse}})
 async def get_active_profile_endpoint():
     """``active`` is the sticky default written by ``hermes profile use`` (what new CLI
     invocations pick up); ``current`` is the profile this running dashboard is scoped to."""
@@ -896,7 +907,7 @@ async def get_active_profile_endpoint():
     return await run_in_threadpool(_run)
 
 
-@router.post("/api/profiles/active")
+@router.post("/api/profiles/active", responses={200: {"model": ProfileSetActiveResponse}})
 async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """Set the sticky active profile (mirrors ``hermes profile use``); does not retarget the
     running dashboard, only subsequent CLI commands and gateways."""
@@ -907,7 +918,7 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     return {"ok": True, "active": profiles_mod.normalize_profile_name(body.name)}
 
 
-@router.get("/api/profiles/{name}/setup-command")
+@router.get("/api/profiles/{name}/setup-command", responses={200: {"model": ProfileSetupCommandResponse}})
 async def get_profile_setup_command(name: str):
     return {"command": _profile_setup_command(name)}
 
@@ -928,7 +939,7 @@ def _linux_terminal_commands(command: str) -> list:
         for exe, flag in _LINUX_TERMINALS]
 
 
-@router.post("/api/profiles/{name}/open-terminal")
+@router.post("/api/profiles/{name}/open-terminal", responses={200: {"model": ProfileOpenTerminalResponse}})
 async def open_profile_terminal_endpoint(name: str):
     with _profile_errors("POST /api/profiles/%s/open-terminal failed", name):
         command = _profile_setup_command(name)
@@ -950,7 +961,7 @@ async def open_profile_terminal_endpoint(name: str):
     return {"ok": True, "command": command}
 
 
-@router.patch("/api/profiles/{name}")
+@router.patch("/api/profiles/{name}", responses={200: {"model": ProfileRenameResponse}})
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
     with _profile_errors("PATCH /api/profiles/%s failed", name,
@@ -969,7 +980,7 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     return {"ok": True, "name": profiles_mod.normalize_profile_name(body.new_name), "path": str(path)}
 
 
-@router.delete("/api/profiles/{name}")
+@router.delete("/api/profiles/{name}", responses={200: {"model": ProfileDeleteResponse}})
 async def delete_profile_endpoint(name: str):
     """The dashboard collects the user's confirmation in its own dialog, so ``yes=True``
     always skips the CLI's interactive prompt.
@@ -990,7 +1001,7 @@ async def delete_profile_endpoint(name: str):
     return {"ok": True, "path": str(path)}
 
 
-@router.get("/api/profiles/{name}/soul")
+@router.get("/api/profiles/{name}/soul", responses={200: {"model": ProfileSoulResponse}})
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     def _run():
@@ -1005,7 +1016,7 @@ async def get_profile_soul(name: str):
     return {"content": content, "exists": True}
 
 
-@router.put("/api/profiles/{name}/soul")
+@router.put("/api/profiles/{name}/soul", responses={200: {"model": OkResponse}})
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
 
@@ -1027,7 +1038,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     return {"ok": True}
 
 
-@router.put("/api/profiles/{name}/description")
+@router.put("/api/profiles/{name}/description", responses={200: {"model": ProfileDescriptionResponse}})
 async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
     """Set or clear a profile's role description (kanban routing signal), stored as
     user-authored (``description_auto: false``) so the auto-describer won't overwrite it."""
@@ -1041,7 +1052,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     return {"ok": True, "description": text, "description_auto": False}
 
 
-@router.put("/api/profiles/{name}/model")
+@router.put("/api/profiles/{name}/model", responses={200: {"model": ProfileModelResponse}})
 async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     """Set the main model for a specific profile's config.yaml without touching the dashboard's
     own profile — ``POST /api/model/set`` (main scope) via the HERMES_HOME override."""
@@ -1056,7 +1067,7 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     return {"ok": True, "provider": provider, "model": model}
 
 
-@router.post("/api/profiles/{name}/describe-auto")
+@router.post("/api/profiles/{name}/describe-auto", responses={200: {"model": ProfileDescribeAutoResponse}})
 async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     """Auto-generate a profile's description via the auxiliary LLM (mirrors ``hermes profile
     describe <name> --auto``). A failed generation is ``ok: false`` with a reason rather than
@@ -1087,7 +1098,7 @@ def _read_desktop_overlay(profile_dir: Path) -> Any:
     return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8-sig"))
 
 
-@router.post("/api/profiles/{name}/export")
+@router.post("/api/profiles/{name}/export", responses={200: {"model": ProfileExportResponse}})
 async def export_profile_endpoint(name: str, body: ProfileExport):
     from hermes_cli import profiles as profiles_mod
     output = (body.output or "").strip()
@@ -1105,7 +1116,7 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
     return {"ok": True, "archive": str(result)}
 
 
-@router.post("/api/profiles/import")
+@router.post("/api/profiles/import", responses={200: {"model": ProfileImportResponse}})
 async def import_profile_endpoint(body: ProfileImport):
     from hermes_cli import profiles as profiles_mod
     archive = (body.archive or "").strip()
@@ -1134,7 +1145,7 @@ async def import_profile_endpoint(body: ProfileImport):
     return {"ok": True, "name": imported, "path": str(profile_dir), "desktop": desktop_overlay}
 
 
-@router.get("/api/profiles/{name}/desktop-overlay")
+@router.get("/api/profiles/{name}/desktop-overlay", responses={200: {"model": ProfileDesktopOverlayResponse}})
 async def get_profile_desktop_overlay(name: str):
     """The desktop appearance/interface overlay bundled with an imported profile
     (``desktop.json`` at the profile root), or ``exists: false``."""

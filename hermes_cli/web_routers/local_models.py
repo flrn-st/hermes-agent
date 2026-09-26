@@ -31,6 +31,15 @@ from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _config_profile_scope
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.local_models import (
+    LocalModelJob, LocalModelsActivateResponse, LocalModelsCatalogResponse,
+    LocalModelsDownloadPauseResponse, LocalModelsDownloadResponse,
+    LocalModelsDownloadResumeResponse, LocalModelsHardwareResponse, LocalModelsJobsResponse,
+    LocalModelsQuickstartResponse, LocalModelsRuntimeInstallResponse,
+    LocalModelsSearchFilesResponse, LocalModelsSearchResponse, LocalModelsServerResponse,
+    LocalModelsSideloadResponse, LocalModelsStatusResponse,
+)
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -40,10 +49,11 @@ from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
 from hermes_cli.local_runtime.gguf import split_parts
+from hermes_cli.web_responses.check import ContractRoute
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
@@ -489,7 +499,7 @@ def _active_llamacpp_model_id() -> str | None:
     return _quiet(read, None)
 
 
-@router.get("/api/local-models/status")
+@router.get("/api/local-models/status", responses={200: {"model": LocalModelsStatusResponse}})
 def local_models_status():
     """Cheap, immediate: config state + installed runtime + staged models + supervisor state (GPU facts live
     in /hardware). Sync def on purpose: blocking urlopen/scans run in the threadpool."""
@@ -540,7 +550,7 @@ def _nvidia_smi_facts() -> dict:
     )
 
 
-@router.get("/api/local-models/hardware")
+@router.get("/api/local-models/hardware", responses={200: {"model": LocalModelsHardwareResponse}})
 def local_models_hardware():
     """The budget as plain facts, polled by the pane and statusbar. Sync def: shells out to nvidia-smi — threadpool."""
     budget = hardware.probe_budget()
@@ -613,7 +623,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
     return row
 
 
-@router.get("/api/local-models/catalog")
+@router.get("/api/local-models/catalog", responses={200: {"model": LocalModelsCatalogResponse}})
 def local_models_catalog():
     """Every entry answers up front: how big is the download, will it fit, what context/speed shape will I
     get. The row advertises the BEST build for this machine (highest quality fully on GPU at the 64K floor;
@@ -659,7 +669,7 @@ def _install_engine_job(job: dict[str, Any], backend: str):
     )
 
 
-@router.post("/api/local-models/runtime/install")
+@router.post("/api/local-models/runtime/install", responses={200: {"model": LocalModelsRuntimeInstallResponse}})
 def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
     tag, backend = _runtime_target(body.backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
@@ -694,7 +704,7 @@ def _download_target(model_id: str):
     return entry, choice.variant
 
 
-@router.post("/api/local-models/download")
+@router.post("/api/local-models/download", responses={200: {"model": LocalModelsDownloadResponse}})
 def local_models_download(body: ModelDownloadBody):
     """Accepts either a family id (downloads this machine's selected variant) or an exact variant model_id."""
     entry, variant = _download_target(body.model_id)
@@ -711,7 +721,7 @@ def local_models_download(body: ModelDownloadBody):
     return {"job_id": job["job_id"], "model_id": variant.model_id}
 
 
-@router.post("/api/local-models/download/pause")
+@router.post("/api/local-models/download/pause", responses={200: {"model": LocalModelsDownloadPauseResponse}})
 async def local_models_download_pause(body: JobIdBody):
     """Pause the download phase of a model, component or quickstart job."""
     job = _JOBS.get(body.job_id)
@@ -724,7 +734,7 @@ async def local_models_download_pause(body: JobIdBody):
     return {"ok": True, "paused": True}
 
 
-@router.post("/api/local-models/download/resume")
+@router.post("/api/local-models/download/resume", responses={200: {"model": LocalModelsDownloadResumeResponse}})
 async def local_models_download_resume(body: JobIdBody):
     """Restart the same job; PM reuses verified files and durable ranges."""
     if body.job_id not in _JOBS:
@@ -733,7 +743,7 @@ async def local_models_download_resume(body: JobIdBody):
     return {"ok": True, "resumed": bool(resume and resume())}
 
 
-@router.delete("/api/local-models/models/{model_id}")
+@router.delete("/api/local-models/models/{model_id}", responses={200: {"model": OkResponse}})
 async def local_models_delete(model_id: str):
     """Remove every split part plus private assets, then bounce the router off the request thread (deleting
     the active file mid-serve is exactly the stale state the refresh exists for)."""
@@ -787,7 +797,7 @@ def _repriced_quickstart(job: dict[str, Any], body: QuickstartBody, variant):
     return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
 
 
-@router.post("/api/local-models/quickstart")
+@router.post("/api/local-models/quickstart", responses={200: {"model": LocalModelsQuickstartResponse}})
 def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
     missing), make it the default. Each leg uses the same code as the individual setup routes.
@@ -855,7 +865,7 @@ def _start_server() -> None:
 _SERVER_ACTIONS = {"stop": _stop_server, "start": _start_server}
 
 
-@router.post("/api/local-models/server")
+@router.post("/api/local-models/server", responses={200: {"model": LocalModelsServerResponse}})
 async def local_models_server(body: ServerActionBody):
     """Turn the local engine off (stop the server, free ALL GPU memory, disable auto-start) or back on. Unlike
     per-model eject the off switch IS durable: the user said off, so boots stay off until they say on."""
@@ -872,7 +882,7 @@ async def local_models_server(body: ServerActionBody):
 
 
 # ── eject / activate ─────────────────────────────────────────
-@router.post("/api/local-models/eject")
+@router.post("/api/local-models/eject", responses={200: {"model": OkResponse}})
 def local_models_eject(body: ModelEjectBody):
     """Free a loaded model's GPU memory now; only demand (the next message) reloads it — residency v2 has no
     automatic loading anywhere. Sync def: the fallback path blocks on a 120s urlopen — threadpool, never the loop."""
@@ -890,7 +900,7 @@ def local_models_eject(body: ModelEjectBody):
     return {"ok": True}
 
 
-@router.post("/api/local-models/activate")
+@router.post("/api/local-models/activate", responses={200: {"model": LocalModelsActivateResponse}})
 async def local_models_activate(body: ModelActivateBody, profile: Optional[str] = None):
     """Make a downloaded model the default for new chats: a config write via the same machinery as
     /api/model/set plus making sure the server is up. NO model loading (residency v2: models load on first
@@ -917,7 +927,7 @@ async def local_models_activate(body: ModelActivateBody, profile: Optional[str] 
 
 
 # ── job polling ──────────────────────────────────────────────
-@router.get("/api/local-models/jobs")
+@router.get("/api/local-models/jobs", responses={200: {"model": LocalModelsJobsResponse}})
 async def local_models_jobs():
     """All recent jobs, running first — the pane and app-level poller rediscover in-flight work here after a remount."""
     with _JOBS_LOCK:
@@ -927,7 +937,7 @@ async def local_models_jobs():
         return {"jobs": [_job_view(job) for job in [*active, *recent]]}
 
 
-@router.get("/api/local-models/jobs/{job_id}")
+@router.get("/api/local-models/jobs/{job_id}", responses={200: {"model": LocalModelJob}})
 async def local_models_job(job_id: str):
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
@@ -937,7 +947,7 @@ async def local_models_job(job_id: str):
 
 
 # ── Hugging Face browser: search, repo files, arbitrary download ─
-@router.get("/api/local-models/search")
+@router.get("/api/local-models/search", responses={200: {"model": LocalModelsSearchResponse}})
 async def local_models_search(q: str, limit: int = 20):
     """Full-text HF search over GGUF models — the firehose behind the curated catalog; fit pills come from /search/files."""
     if not q.strip():
@@ -946,7 +956,7 @@ async def local_models_search(q: str, limit: int = 20):
         return {"hits": [h.__dict__ for h in await run_in_threadpool(hf_browse.search_models, q, limit)]}
 
 
-@router.get("/api/local-models/search/files")
+@router.get("/api/local-models/search/files", responses={200: {"model": LocalModelsSearchFilesResponse}})
 async def local_models_search_files(repo: str):
     """Servable GGUFs in one HF repo with a rough pre-download fit verdict per quant (file size + conservative
     fill-ins; the GGUF header refines it)."""
@@ -955,7 +965,7 @@ async def local_models_search_files(repo: str):
     return {"files": [dict(g.__dict__, paths=list(g.paths)) for g in groups]}
 
 
-@router.post("/api/local-models/download-browsed")
+@router.post("/api/local-models/download-browsed", responses={200: {"model": LocalModelsDownloadResponse}})
 async def local_models_download_browsed(body: BrowsedDownloadBody):
     """Download an arbitrary HF GGUF into the managed models dir. Once landed it is a normal staged model (the
     post-download bounce regenerates presets from its real header); with no catalog entry it serves
@@ -978,7 +988,7 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
     return {"job_id": job["job_id"], "model_id": model_id}
 
 
-@router.post("/api/local-models/sideload")
+@router.post("/api/local-models/sideload", responses={200: {"model": LocalModelsSideloadResponse}})
 async def local_models_sideload(body: SideloadBody):
     """Register a GGUF already on this machine: link it into the managed models dir (copy only when linking is
     impossible) and bounce the router. The original stays put; delete-from-Hermes removes only our link."""

@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import cfg_get, get_process_hermes_home
 from utils import env_var_enabled
+from hermes_cli.web_responses.base import binary_body, text_body
 
 # Serve assets with explicit MIME types: the host's map (on Windows the
 # registry can map .js -> text/plain) must not decide the Content-Type of
@@ -100,6 +101,14 @@ _HEADLESS_MSG = (
 )
 
 
+def _json_error_body(description: str, *keys: str) -> dict:
+    """``responses=`` entry for the SPA routes' JSON 404s: ``{<key>: str}`` for one of ``keys``. Inline
+    because these routes answer HTML, where FastAPI would file a ``model`` under ``text/html``."""
+    shapes = [{"type": "object", "required": [k], "properties": {k: {"type": "string"}}} for k in keys]
+    return {"description": description,
+            "content": {"application/json": {"schema": shapes[0] if len(shapes) == 1 else {"oneOf": shapes}}}}
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
 
@@ -119,7 +128,10 @@ def mount_spa(application: FastAPI):
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
     if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
 
-        @application.get("/{full_path:path}")
+        @application.get("/{full_path:path}", response_class=HTMLResponse, responses={
+            200: text_body("Token-only bootstrap page at ``/`` when the auth gate is off."),
+            404: _json_error_body("Every other path (and ``/`` when gated).", "error"),
+        })
         async def no_frontend(full_path: str):
             # Desktop token handshake: the Electron shell boots by fetching `/` and reading
             # ``window.__HERMES_SESSION_TOKEN__`` for /api/ws auth. When headless 404'd every
@@ -198,7 +210,10 @@ def mount_spa(application: FastAPI):
     # Built CSS contains absolute ``url(/fonts/...)`` / ``url(/ds-assets/...)`` references that
     # browsers resolve against the document origin — wrong under a proxy prefix. Intercept CSS
     # BEFORE the StaticFiles mount and rewrite when a prefix is in play.
-    @application.get("/assets/{filename}.css")
+    @application.get("/assets/{filename}.css", response_class=Response, responses={
+        200: text_body("Built CSS; asset ``url()``s rewritten under ``X-Forwarded-Prefix``.", "text/css"),
+        404: _json_error_body("No such stylesheet in the built dist.", "error"),
+    })
     async def serve_css(filename: str, request: Request):
         css_path = WEB_DIST / "assets" / f"{filename}.css"
         if not css_path.is_file() or not css_path.resolve().is_relative_to(WEB_DIST.resolve()):
@@ -227,7 +242,12 @@ def mount_spa(application: FastAPI):
         "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False), name="assets"
     )
 
-    @application.get("/{full_path:path}")
+    @application.get("/{full_path:path}", response_class=HTMLResponse, responses={
+        200: binary_body("A built file under the dist (favicon, fonts, ...), else the SPA ``index.html`` "
+                         "with the bootstrap script injected (``no-store``).", "application/octet-stream"),
+        404: _json_error_body("``detail`` for an unmatched ``/api/*`` path; ``error`` when the frontend is "
+                              "not built.", "detail", "error"),
+    })
     async def serve_spa(full_path: str, request: Request):
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         # An unmatched /api/* path is a missing endpoint, not a client-side route: return a

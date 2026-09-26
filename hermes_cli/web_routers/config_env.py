@@ -27,11 +27,19 @@ from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
+from hermes_cli.web_responses.base import OkResponse
+from hermes_cli.web_responses.config_env import (
+    ConfigDefaultsResponse, ConfigResponse, ConfigSchemaResponse, CustomEndpointActivateResponse,
+    CustomEndpointDeleteResponse, CustomEndpointListResponse, CustomEndpointUpsertResponse,
+    CustomEndpointValidateResponse, EgressStatusResponse, EnvVarInfo, EnvVarRemoveResponse,
+    EnvVarRevealResponse, EnvVarSaveResponse, ProviderCredentialValidateResponse,
+)
 from typing import Any, Dict, List, Optional, Tuple
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger("hermes_cli.web_server")
-config_router = APIRouter()
-router = APIRouter()
+config_router = APIRouter(route_class=ContractRoute)
+router = APIRouter(route_class=ContractRoute)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _channel_managed_env_keys = late("_channel_managed_env_keys", "hermes_cli.web_server_messaging")
@@ -77,7 +85,7 @@ def _env_write_errors(log_msg: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@config_router.get("/api/config")
+@config_router.get("/api/config", responses={200: {"model": ConfigResponse}})
 async def get_config(profile: Optional[str] = None, include_defaults: bool = True):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
     # load_config() reads from disk; a slow lock-holder on the event loop froze
@@ -91,12 +99,12 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
-@config_router.get("/api/config/defaults")
+@config_router.get("/api/config/defaults", responses={200: {"model": ConfigDefaultsResponse}})
 async def get_defaults():
     return DEFAULT_CONFIG
 
 
-@config_router.get("/api/config/schema")
+@config_router.get("/api/config/schema", responses={200: {"model": ConfigSchemaResponse}})
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
@@ -106,7 +114,7 @@ async def get_schema(profile: Optional[str] = None):
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
-@config_router.get("/api/egress/status")
+@config_router.get("/api/egress/status", responses={200: {"model": EgressStatusResponse}})
 async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
@@ -114,7 +122,7 @@ async def get_egress_status(profile: Optional[str] = None):
         return {"text": format_status_text()}
 
 
-@router.put("/api/config")
+@router.put("/api/config", responses={200: {"model": OkResponse}})
 async def update_config(
     body: ConfigUpdate, profile: Optional[str] = None, preserve_language: bool = False
 ):
@@ -256,7 +264,7 @@ def _catalog_provider_env_metadata() -> dict:
     return meta
 
 
-@router.get("/api/env")
+@router.get("/api/env", responses={200: {"model": dict[str, EnvVarInfo]}})
 async def get_env_vars(profile: Optional[str] = None):
     # _profile_scope takes _SKILLS_PROFILE_LOCK and load_env()/catalog
     # discovery read from disk — keep the whole build off the event loop.
@@ -325,7 +333,7 @@ def _get_env_vars_sync(profile: Optional[str] = None):
     return result
 
 
-@router.put("/api/env")
+@router.put("/api/env", responses={200: {"model": EnvVarSaveResponse}})
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # Unified credential lifecycle: writes .env AND reconciles any config.yaml
     # mirror still holding the previous value of this var (model.api_key /
@@ -725,7 +733,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     return endpoint_id, entry
 
 
-@router.get("/api/providers/custom-endpoints")
+@router.get("/api/providers/custom-endpoints", responses={200: {"model": CustomEndpointListResponse}})
 def list_custom_endpoints(profile: Optional[str] = None):
     """Return configured OpenAI-compatible custom endpoints for Desktop.
 
@@ -738,7 +746,7 @@ def list_custom_endpoints(profile: Optional[str] = None):
             return _custom_endpoint_response(load_config())
 
 
-@router.post("/api/providers/custom-endpoints")
+@router.post("/api/providers/custom-endpoints", responses={200: {"model": CustomEndpointUpsertResponse}})
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
@@ -769,7 +777,8 @@ def _record_custom_endpoint_setup(home: Any) -> None:
     record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
-@router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
+@router.post("/api/providers/custom-endpoints/{endpoint_id}/activate",
+             responses={200: {"model": CustomEndpointActivateResponse}})
 def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     with http_failure(
@@ -821,7 +830,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         return {"ok": True, "provider": provider_key, "model": model}
 
 
-@router.delete("/api/providers/custom-endpoints/{endpoint_id}")
+@router.delete("/api/providers/custom-endpoints/{endpoint_id}",
+               responses={200: {"model": CustomEndpointDeleteResponse}})
 def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     with http_failure(
@@ -849,7 +859,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         return response
 
 
-@router.post("/api/providers/custom-endpoints/validate")
+@router.post("/api/providers/custom-endpoints/validate", responses={200: {"model": CustomEndpointValidateResponse}})
 async def validate_custom_endpoint(body: CustomEndpointUpdate):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
     base_url = (body.base_url or "").strip().rstrip("/")
@@ -994,7 +1004,7 @@ def _endpoint_probe_client(url: str, timeout: float):
     return httpx.AsyncClient(timeout=httpx.Timeout(timeout), trust_env=not is_local_endpoint(url))
 
 
-@router.post("/api/providers/validate")
+@router.post("/api/providers/validate", responses={200: {"model": ProviderCredentialValidateResponse}})
 async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     """Live-probe a provider credential before it's saved.
 
@@ -1064,7 +1074,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
 
 
-@router.delete("/api/env")
+@router.delete("/api/env", responses={200: {"model": EnvVarRemoveResponse}})
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # Unified credential lifecycle: clears the .env entry AND every mirror of
     # the credential — env-seeded credential_pool entries in auth.json (stale
@@ -1082,7 +1092,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
         return result
 
 
-@router.post("/api/env/reveal")
+@router.post("/api/env/reveal", responses={200: {"model": EnvVarRevealResponse}})
 async def reveal_env_var(
     body: EnvVarReveal, request: Request, profile: Optional[str] = None
 ):

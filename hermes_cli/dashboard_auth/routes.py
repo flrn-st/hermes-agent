@@ -45,10 +45,19 @@ from hermes_cli.dashboard_auth.login_page import (
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+from hermes_cli.web_responses.dashboard_auth import (
+    DASHBOARD_AUTH_CALLBACK_RESPONSES, DASHBOARD_AUTH_LOGIN_PAGE_RESPONSES,
+    DASHBOARD_AUTH_LOGIN_REDIRECT_RESPONSES, DASHBOARD_AUTH_LOGOUT_RESPONSES,
+    DASHBOARD_AUTH_NATIVE_AUTHORIZE_RESPONSES, DashboardAuthBearerTokenResponse,
+    DashboardAuthMeResponse, DashboardAuthNoProvidersResponse, DashboardAuthPasswordLoginResponse,
+    DashboardAuthProvidersResponse, DashboardAuthSessionExpiredResponse,
+    DashboardAuthWsTicketResponse,
+)
+from hermes_cli.web_responses.check import ContractRoute
 
 _log = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 _NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 _NATIVE_EXPIRED_DETAIL = "Native login expired or unknown; restart sign-in."
@@ -192,7 +201,8 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 
 # --- Public: login page + provider list ------------------------------------
 
-@router.get("/login", name="login_page")
+@router.get("/login", name="login_page", response_class=HTMLResponse,
+            responses=DASHBOARD_AUTH_LOGIN_PAGE_RESPONSES)
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
@@ -200,7 +210,8 @@ async def login_page(request: Request) -> HTMLResponse:
         render_login_html(next_path=next_path, prefix=_prefix(request)), headers=_NO_STORE)
 
 
-@router.get("/api/auth/providers", name="auth_providers")
+@router.get("/api/auth/providers", name="auth_providers", responses={
+    200: {"model": DashboardAuthProvidersResponse}, 503: {"model": DashboardAuthNoProvidersResponse}})
 async def api_auth_providers() -> Any:
     # Only interactive providers are sign-in options; fail closed on zero.
     providers = list_session_providers()
@@ -214,7 +225,8 @@ async def api_auth_providers() -> Any:
 
 # --- Public: OAuth round trip ----------------------------------------------
 
-@router.get("/auth/login", name="auth_login")
+@router.get("/auth/login", name="auth_login", response_class=RedirectResponse, status_code=302,
+            responses=DASHBOARD_AUTH_LOGIN_REDIRECT_RESPONSES)
 async def auth_login(request: Request, provider: str, next: str = ""):
     p = get_provider(provider)
     if p is None:
@@ -286,7 +298,8 @@ def _select_native_provider(provider: str):
     return candidates[0] if len(candidates) == 1 else None
 
 
-@router.get("/auth/native/authorize", name="auth_native_authorize")
+@router.get("/auth/native/authorize", name="auth_native_authorize", response_class=HTMLResponse,
+            responses=DASHBOARD_AUTH_NATIVE_AUTHORIZE_RESPONSES)
 async def auth_native_authorize(
     request: Request, provider: str = "", code_challenge: str = "",
     code_challenge_method: str = "", redirect_uri: str = "", state: str = ""):
@@ -335,7 +348,8 @@ async def auth_native_authorize(
     return resp
 
 
-@router.get("/auth/callback", name="auth_callback")
+@router.get("/auth/callback", name="auth_callback", response_class=RedirectResponse, status_code=302,
+            responses=DASHBOARD_AUTH_CALLBACK_RESPONSES)
 async def auth_callback(
     request: Request, code: str = "", state: str = "", error: str = "",
     error_description: str = ""):
@@ -444,7 +458,8 @@ class _PasswordLoginBody(BaseModel):
     next: str = ""
 
 
-@router.post("/auth/password-login", name="auth_password_login")
+@router.post("/auth/password-login", name="auth_password_login",
+             responses={200: {"model": DashboardAuthPasswordLoginResponse}})
 async def auth_password_login(request: Request, body: _PasswordLoginBody):
     """Authenticate a username/password against a password provider.
 
@@ -493,7 +508,8 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     return resp
 
 
-@router.post("/auth/logout", name="auth_logout")
+@router.post("/auth/logout", name="auth_logout", response_class=RedirectResponse, status_code=302,
+             responses=DASHBOARD_AUTH_LOGOUT_RESPONSES)
 async def auth_logout(request: Request):
     _at, rt = read_session_cookies(request)
     # Best-effort revoke on every provider; failures logged, never raised.
@@ -521,7 +537,7 @@ def _require_session(request: Request):
     return sess
 
 
-@router.get("/api/auth/me", name="auth_me")
+@router.get("/api/auth/me", name="auth_me", responses={200: {"model": DashboardAuthMeResponse}})
 async def api_auth_me(request: Request):
     """Return the verified session as JSON.
 
@@ -553,7 +569,8 @@ async def api_auth_me(request: Request):
         "org_id": sess.org_id, "provider": sess.provider, "expires_at": sess.expires_at}
 
 
-@router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
+@router.post("/api/auth/ws-ticket", name="auth_ws_ticket",
+             responses={200: {"model": DashboardAuthWsTicketResponse}})
 async def api_auth_ws_ticket(request: Request):
     """Mint a 30s single-use ticket for a WS upgrade (browsers cannot set
     ``Authorization`` on the upgrade); one ticket per WS."""
@@ -571,7 +588,8 @@ class _NativeTokenBody(BaseModel):
     code_verifier: str
 
 
-@router.post("/auth/native/token", name="auth_native_token")
+@router.post("/auth/native/token", name="auth_native_token",
+             responses={200: {"model": DashboardAuthBearerTokenResponse}})
 async def auth_native_token(request: Request, body: _NativeTokenBody):
     """Exchange a loopback gateway code + PKCE verifier for bearer tokens. The code is consumed
     on every path (no verifier oracle, no replay); any failure is a generic 400. Tokens go in
@@ -591,7 +609,8 @@ class _NativeRefreshBody(BaseModel):
     provider: str = ""
 
 
-@router.post("/auth/native/refresh", name="auth_native_refresh")
+@router.post("/auth/native/refresh", name="auth_native_refresh", responses={
+    200: {"model": DashboardAuthBearerTokenResponse}, 401: {"model": DashboardAuthSessionExpiredResponse}})
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a desktop-held refresh token (mirrors the gate's ``_attempt_refresh``): every
     provider rejecting the RT -> 401 ``session_expired`` (desktop re-logs); none rotated and one

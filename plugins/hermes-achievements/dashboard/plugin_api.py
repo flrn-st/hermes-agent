@@ -12,13 +12,15 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict
 
 from hermes_constants import get_hermes_home
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
@@ -841,9 +843,157 @@ def evaluate_all(force: bool = False) -> dict[str, Any]:
     return _SNAPSHOT_CACHE if _SNAPSHOT_CACHE is not None else _build_pending_snapshot(now)
 
 
+# ---- Response contracts ----
+# OpenAPI documentation only (attached with ``responses=``, never ``response_model=``), so they
+# cannot change what a route returns. Defined here, not in hermes_cli.web_responses, to keep the
+# plugin standalone.
+
+class _AchievementContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", defer_build=True)
+
+
+class AchievementTier(_AchievementContract):
+    name: str
+    threshold: int
+
+
+class AchievementRequirement(_AchievementContract):
+    metric: str
+    gte: int
+
+
+class AchievementEvidence(_AchievementContract):
+    """``evidence_for`` — the session holding the best per-session value for the metric."""
+
+    session_id: str
+    title: str
+    value: int
+
+
+class AchievementItem(_AchievementContract):
+    """One ``ACHIEVEMENTS`` definition merged with its evaluation (``_result``) and passed through
+    ``display_achievement``. Tiered badges carry ``threshold_metric`` + ``tiers``, multi-condition
+    ones ``requirements``. A hidden secret is masked (``name`` ``"???"``, ``icon`` ``"secret"``).
+    ``unlocked_at`` / ``evidence`` appear on unlocked badges of a snapshot (``unlocked_at`` is null
+    for an unlock seen only by an in-flight partial scan)."""
+
+    id: str
+    name: str
+    description: str
+    category: str
+    kind: Literal["lifetime", "best_session", "multi_condition"]
+    icon: str
+    secret: bool | None = None
+    requirements: list[AchievementRequirement] | None = None
+    threshold_metric: str | None = None
+    tiers: list[AchievementTier] | None = None
+    unlocked: bool
+    discovered: bool
+    state: Literal["unlocked", "discovered", "secret"]
+    tier: str | None
+    progress: int
+    next_tier: str | None
+    next_threshold: int
+    progress_pct: int
+    criteria: str
+    unlocked_at: int | None = None
+    evidence: AchievementEvidence | None = None
+
+
+class AchievementScanStatus(_AchievementContract):
+    """``_scan_status_payload`` — ``_SCAN_STATUS`` plus the snapshot freshness fields."""
+
+    state: Literal["idle", "running", "failed"]
+    started_at: int | None
+    finished_at: int | None
+    last_error: str | None
+    last_duration_ms: int | None
+    run_count: int
+    ttl_seconds: int
+    snapshot_generated_at: int | None
+    snapshot_age_seconds: int | None
+    snapshot_stale: bool
+
+
+class AchievementScanMeta(_AchievementContract):
+    """``_scan_meta``; the ``sessions_*_so_far`` / ``expected_total`` pair only on real scans."""
+
+    mode: Literal["full", "incremental", "in_progress", "pending", "failed"]
+    sessions_total: int
+    sessions_rescanned: int
+    sessions_reused: int
+    sessions_scanned_so_far: int | None = None
+    sessions_expected_total: int | None = None
+
+
+class AchievementScanMetaWithStatus(AchievementScanMeta):
+    status: AchievementScanStatus
+
+
+class AchievementSessionStats(_AchievementContract):
+    """One per-session ``analyze_messages`` row (checkpointed) with the session fields
+    ``scan_sessions`` adds. Every other key is an integer counter (``*_calls``, ``*_count``,
+    ``*_events``)."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, int]
+
+    session_id: str
+    title: str
+    started_at: float | None
+    last_active: float | None
+    source: str | None
+    tool_names: list[str]
+    model_names: list[str]
+    port_conflict: bool
+
+
+class AchievementsResponse(_AchievementContract):
+    """``achievements`` — the current snapshot (``evaluate_all``) without its per-session rows."""
+
+    achievements: list[AchievementItem]
+    unlocked_count: int
+    discovered_count: int
+    secret_count: int
+    total_count: int
+    error: str | None
+    generated_at: int
+    is_stale: bool
+    scan_meta: AchievementScanMetaWithStatus
+
+
+class AchievementSessionBadgesResponse(_AchievementContract):
+    """``session_badges`` — badges the one session unlocks on its own (``[]`` when unknown)."""
+
+    session_id: str
+    badges: list[AchievementItem]
+
+
+class AchievementRescanResponse(_AchievementContract):
+    """``rescan`` — ``{"ok": true}`` plus the full ``_snapshot`` payload of a synchronous scan."""
+
+    ok: bool
+    achievements: list[AchievementItem]
+    sessions: list[AchievementSessionStats]
+    aggregate: dict[str, int]
+    scan_meta: AchievementScanMeta
+    error: str | None
+    unlocked_count: int
+    discovered_count: int
+    secret_count: int
+    total_count: int
+    generated_at: int
+
+
+class AchievementResetResponse(_AchievementContract):
+    """``reset_state``."""
+
+    ok: bool
+
+
 # ---- Routes ----
 
-@router.get("/achievements")
+@router.get("/achievements", responses={200: {"model": AchievementsResponse}})
 async def achievements():
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
@@ -852,18 +1002,18 @@ async def achievements():
     return payload
 
 
-@router.get("/scan-status")
+@router.get("/scan-status", responses={200: {"model": AchievementScanStatus}})
 async def scan_status():
     return _scan_status_payload()
 
 
-@router.get("/recent-unlocks")
+@router.get("/recent-unlocks", responses={200: {"model": list[AchievementItem]}})
 async def recent_unlocks():
     data = evaluate_all()
     return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
 
 
-@router.get("/sessions/{session_id}/badges")
+@router.get("/sessions/{session_id}/badges", responses={200: {"model": AchievementSessionBadgesResponse}})
 async def session_badges(session_id: str):
     data = evaluate_all()
     session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
@@ -874,12 +1024,12 @@ async def session_badges(session_id: str):
     return {"session_id": session_id, "badges": [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]}
 
 
-@router.post("/rescan")
+@router.post("/rescan", responses={200: {"model": AchievementRescanResponse}})
 async def rescan():
     return {"ok": True, **evaluate_all(force=True)}
 
 
-@router.post("/reset-state")
+@router.post("/reset-state", responses={200: {"model": AchievementResetResponse}})
 async def reset_state():
     global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
     save_state({"unlocks": {}})

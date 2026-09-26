@@ -7,7 +7,10 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-router = APIRouter(prefix="/api/memory/providers")
+from hermes_cli.web_responses.memory_oauth import MemoryOAuthStartResponse, MemoryOAuthStatusResponse
+from hermes_cli.web_responses.check import ContractRoute
+
+router = APIRouter(prefix="/api/memory/providers", route_class=ContractRoute)
 
 
 def _resolve_flow(provider: str):
@@ -48,7 +51,7 @@ def _scope_to_profile(profile: Optional[str]):
         reset_hermes_home_override(token)
 
 
-@router.post("/{provider}/oauth/start")
+@router.post("/{provider}/oauth/start", responses={200: {"model": MemoryOAuthStartResponse}})
 async def start_memory_oauth(provider: str, profile: Optional[str] = None):
     """Begin a provider's zero-CLI OAuth flow (browser + loopback listener); returns immediately, poll status."""
     try:
@@ -62,7 +65,7 @@ async def start_memory_oauth(provider: str, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
 
 
-@router.get("/{provider}/oauth/status")
+@router.get("/{provider}/oauth/status", responses={200: {"model": MemoryOAuthStatusResponse}})
 async def memory_oauth_status(provider: str, profile: Optional[str] = None):
     """Poll a provider's OAuth flow: idle | pending | connected | error."""
     try:

@@ -19,11 +19,19 @@ from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
     ToolsetProviderSelect, ToolsetToggle)
+from hermes_cli.web_responses.base import ActionSpawnResponse
+from hermes_cli.web_responses.tools import (
+    ComputerUseStatusResponse, TerminalBackendSelectResponse, TerminalBackendsResponse,
+    ToolsetConfigResponse, ToolsetEnvSaveResponse, ToolsetListRow, ToolsetModelSelectResponse,
+    ToolsetModelsResponse, ToolsetPostSetupResponse, ToolsetProviderSelectResponse,
+    ToolsetToggleResponse,
+)
 from hermes_cli.web_routers._common import (
     _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
+from hermes_cli.web_responses.check import ContractRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ContractRoute)
 
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
@@ -227,7 +235,7 @@ def _no_models(name: str) -> dict:
     return {"name": name, "has_models": False, "models": [], "current": None, "default": None}
 
 
-@router.get("/api/tools/toolsets")
+@router.get("/api/tools/toolsets", responses={200: {"model": list[ToolsetListRow]}})
 async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _CONFIG_ONLY_TOOLSETS, _get_effective_configurable_toolsets, _get_platform_tools,
@@ -277,7 +285,7 @@ async def get_toolsets(profile: Optional[str] = None):
     return result
 
 
-@router.put("/api/tools/toolsets/{name}")
+@router.put("/api/tools/toolsets/{name}", responses={200: {"model": ToolsetToggleResponse}})
 async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] = None):
     """Enable/disable a configurable toolset for its configuration platform
     (``platform_toolsets.cli`` for most; platform-restricted toolsets target
@@ -342,7 +350,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         "post_setup_started": post_setup_started}
 
 
-@router.get("/api/tools/toolsets/{name}/config")
+@router.get("/api/tools/toolsets/{name}/config", responses={200: {"model": ToolsetConfigResponse}})
 async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Provider matrix + key status for a toolset's config panel (the CLI picker
     rows, each env var annotated ``is_set``); no category -> ``has_category: false``."""
@@ -429,7 +437,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     return await asyncio.to_thread(_read)
 
 
-@router.get("/api/tools/toolsets/{name}/models")
+@router.get("/api/tools/toolsets/{name}/models", responses={200: {"model": ToolsetModelsResponse}})
 async def get_toolset_models(
     name: str, provider: Optional[str] = None, profile: Optional[str] = None):
     """Model catalog for a toolset backend (image/video gen) — the GUI
@@ -469,7 +477,7 @@ async def get_toolset_models(
     return await asyncio.to_thread(_read) or _no_models(name)
 
 
-@router.put("/api/tools/toolsets/{name}/model")
+@router.put("/api/tools/toolsets/{name}/model", responses={200: {"model": ToolsetModelSelectResponse}})
 async def select_toolset_model(
     name: str, body: ToolsetModelSelect, profile: Optional[str] = None):
     """Persist a backend model selection (``image_gen.model`` /
@@ -501,7 +509,7 @@ async def select_toolset_model(
     return {"ok": True, "name": name, "model": model_id, "plugin": plugin}
 
 
-@router.put("/api/tools/toolsets/{name}/provider")
+@router.put("/api/tools/toolsets/{name}/provider", responses={200: {"model": ToolsetProviderSelectResponse}})
 async def select_toolset_provider(
     name: str, body: ToolsetProviderSelect, profile: Optional[str] = None):
     """Persist a provider selection via ``apply_provider_selection`` (shared with
@@ -587,7 +595,7 @@ async def select_toolset_provider(
     return await asyncio.to_thread(_run)
 
 
-@router.put("/api/tools/toolsets/{name}/env")
+@router.put("/api/tools/toolsets/{name}/env", responses={200: {"model": ToolsetEnvSaveResponse}})
 async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[str] = None):
     """Persist API keys to ``.env`` via ``save_env_value``.  Keys are validated
     against the union of the category's visible-provider ``env_vars`` so this
@@ -628,7 +636,7 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
 
 
-@router.post("/api/tools/toolsets/{name}/post-setup")
+@router.post("/api/tools/toolsets/{name}/post-setup", responses={200: {"model": ToolsetPostSetupResponse}})
 async def run_toolset_post_setup(
     name: str, body: ToolsetPostSetup, profile: Optional[str] = None):
     """Spawn ``hermes tools post-setup <key>`` (long-running installs) as a
@@ -647,7 +655,7 @@ async def run_toolset_post_setup(
     return result
 
 
-@router.get("/api/tools/terminal/backends")
+@router.get("/api/tools/terminal/backends", responses={200: {"model": TerminalBackendsResponse}})
 async def get_terminal_backends(profile: Optional[str] = None):
     """Terminal backend rows with health probes: ``status`` is ``ready`` /
     ``needs_setup`` / ``unavailable``; a probe failure is a status, never an
@@ -674,7 +682,7 @@ async def get_terminal_backends(profile: Optional[str] = None):
     return await asyncio.to_thread(_read)
 
 
-@router.put("/api/tools/terminal/backend")
+@router.put("/api/tools/terminal/backend", responses={200: {"model": TerminalBackendSelectResponse}})
 async def select_terminal_backend(
     body: TerminalBackendSelect, profile: Optional[str] = None):
     """Persist ``terminal.backend``.  A backend that still needs setup is
@@ -696,7 +704,7 @@ async def select_terminal_backend(
     return {"ok": True, "backend": backend}
 
 
-@router.get("/api/tools/computer-use/status")
+@router.get("/api/tools/computer-use/status", responses={200: {"model": ComputerUseStatusResponse}})
 async def get_computer_use_status(profile: Optional[str] = None):
     """Computer Use readiness for the desktop card (payload shape: see
     ``tools.computer_use.permissions.computer_use_status``)."""
@@ -705,7 +713,7 @@ async def get_computer_use_status(profile: Optional[str] = None):
     return await scoped_to_thread(profile, computer_use_status)
 
 
-@router.post("/api/tools/computer-use/permissions/grant")
+@router.post("/api/tools/computer-use/permissions/grant", responses={200: {"model": ActionSpawnResponse}})
 async def grant_computer_use_permissions(profile: Optional[str] = None):
     """Spawn ``hermes computer-use permissions grant`` (macOS-only: launches
     CuaDriver via LaunchServices so the TCC dialog is attributed correctly).

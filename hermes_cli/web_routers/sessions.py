@@ -24,16 +24,24 @@ from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
+from hermes_cli.web_responses.sessions import (
+    SessionBulkDeleteResponse, SessionDeleteResponse, SessionDeletedCountResponse, SessionDetailResponse,
+    SessionEmptyCountResponse, SessionExportResponse, SessionImportResponse,
+    SessionLatestDescendantResponse, SessionListResponse, SessionMessagesAroundResponse,
+    SessionMessagesResponse, SessionMutationSnapshotResponse, SessionOwnerBackfillResponse, SessionPruneResponse,
+    SessionRenameResponse, SessionSearchResponse, SessionStatsResponse, SessionTimelineResponse,
+)
 from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_cli.web_responses.check import ContractRoute
 
-list_router = APIRouter()
-search_router = APIRouter()
-manage_router = APIRouter()
+list_router = APIRouter(route_class=ContractRoute)
+search_router = APIRouter(route_class=ContractRoute)
+manage_router = APIRouter(route_class=ContractRoute)
 
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
@@ -179,7 +187,7 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
 
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
-@list_router.get("/api/sessions")
+@list_router.get("/api/sessions", responses={200: {"model": SessionListResponse}})
 def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
@@ -283,7 +291,7 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
         and started_at >= parent_ended_at)
 
 
-@search_router.get("/api/sessions/search")
+@search_router.get("/api/sessions/search", responses={200: {"model": SessionSearchResponse}})
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str | None = None,
     sources: str | None = None, exclude_sources: str | None = None):
@@ -463,7 +471,7 @@ async def search_sessions(
         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
 
 
-@manage_router.post("/api/sessions/bulk-delete")
+@manage_router.post("/api/sessions/bulk-delete", responses={200: {"model": SessionBulkDeleteResponse}})
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in one transaction (POST: many
     clients refuse a DELETE body).
@@ -489,7 +497,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
-@manage_router.post("/api/sessions/import")
+@manage_router.post("/api/sessions/import", responses={200: {"model": SessionImportResponse}})
 async def import_sessions_endpoint(request: Request):
     """Import sessions exported from the dashboard or CLI (session rows only —
     ``/api/ops/import`` restores a whole backup archive)."""
@@ -508,7 +516,7 @@ async def import_sessions_endpoint(request: Request):
         operation='import', payload={'sessions': body.sessions})
 
 
-@manage_router.get("/api/sessions/empty/count")
+@manage_router.get("/api/sessions/empty/count", responses={200: {"model": SessionEmptyCountResponse}})
 async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     """Count of empty, ended, non-archived sessions (the "Delete empty (N)" button)."""
     count = await asyncio.to_thread(
@@ -516,7 +524,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     return {"count": count}
 
 
-@manage_router.delete("/api/sessions/empty")
+@manage_router.delete("/api/sessions/empty", responses={200: {"model": SessionDeletedCountResponse}})
 async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     """Delete every empty, ended, non-archived session in one transaction.
 
@@ -535,7 +543,7 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     return {"ok": True, "deleted": deleted}
 
 
-@manage_router.get("/api/sessions/stats")
+@manage_router.get("/api/sessions/stats", responses={200: {"model": SessionStatsResponse}})
 async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
     def _stats(db):
@@ -557,7 +565,7 @@ async def get_session_stats(profile: Optional[str] = None):
     return await asyncio.to_thread(_with_db, profile, _stats, read_only=True)
 
 
-@manage_router.get("/api/sessions/{session_id}")
+@manage_router.get("/api/sessions/{session_id}", responses={200: {"model": SessionDetailResponse}})
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     def _detail(db):
         sid = _resolve_session_id(db, session_id)
@@ -580,7 +588,8 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
 
 
-@manage_router.get("/api/sessions/{session_id}/mutation-snapshot")
+@manage_router.get("/api/sessions/{session_id}/mutation-snapshot",
+                   responses={200: {"model": SessionMutationSnapshotResponse}})
 async def get_session_mutation_snapshot(session_id: str, request: Request, profile: Optional[str] = None):
     from hermes_cli.web_server_sessions import _session_mutation_context
     authority, _actor = _session_mutation_context(request, profile)
@@ -595,7 +604,8 @@ async def get_session_mutation_snapshot(session_id: str, request: Request, profi
             'runtime_generation': row['runtime_generation'] if row else None}
 
 
-@manage_router.get("/api/sessions/{session_id}/latest-descendant")
+@manage_router.get("/api/sessions/{session_id}/latest-descendant",
+                   responses={200: {"model": SessionLatestDescendantResponse}})
 async def get_session_latest_descendant(session_id: str, profile: Optional[str] = None):
     latest, path = await asyncio.to_thread(
         _with_db, profile, lambda db: _session_latest_descendant(session_id, db), read_only=True)
@@ -733,7 +743,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     return project_history_commentary(projected_messages, home=home)
 
 
-@manage_router.get("/api/sessions/{session_id}/messages")
+@manage_router.get("/api/sessions/{session_id}/messages", responses={200: {"model": SessionMessagesResponse}})
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
@@ -795,7 +805,7 @@ def _timeline_session_id(db, session_id: str, owner: str) -> str:
     return sid
 
 
-@manage_router.get("/api/sessions/{session_id}/timeline")
+@manage_router.get("/api/sessions/{session_id}/timeline", responses={200: {"model": SessionTimelineResponse}})
 async def get_session_timeline(
     session_id: str, profile: Optional[str] = None,
     limit: int = Query(500, ge=1, le=500), after_row_id: int = Query(0, ge=0),
@@ -817,7 +827,8 @@ async def get_session_timeline(
     return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
 
 
-@manage_router.get("/api/sessions/{session_id}/messages/around")
+@manage_router.get("/api/sessions/{session_id}/messages/around",
+                   responses={200: {"model": SessionMessagesAroundResponse}})
 async def get_session_messages_around(
     session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
     limit: int = Query(120, ge=1, le=120),
@@ -840,7 +851,7 @@ async def get_session_messages_around(
     return result
 
 
-@manage_router.delete("/api/sessions/{session_id}")
+@manage_router.delete("/api/sessions/{session_id}", responses={200: {"model": SessionDeleteResponse}})
 async def delete_session_endpoint(session_id: str, request: Request, profile: Optional[str] = None,
                                   request_id: Optional[str] = None, expected_revision: Optional[int] = None,
                                   expected_generation: Optional[int] = None):
@@ -884,7 +895,7 @@ def _owner_db_for(request: Request, profile: Optional[str]):
     return getattr(authority, "db", None)
 
 
-@manage_router.post("/api/sessions/owner-backfill")
+@manage_router.post("/api/sessions/owner-backfill", responses={200: {"model": SessionOwnerBackfillResponse}})
 async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: Request):
     """Stamp legacy ``profile_name = NULL`` rows with the serving-profile identity.
 
@@ -920,7 +931,7 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
     return {"ok": True, "stamped": stamped, "profile": stamp}
 
 
-@manage_router.patch("/api/sessions/{session_id}")
+@manage_router.patch("/api/sessions/{session_id}", responses={200: {"model": SessionRenameResponse}})
 async def rename_session_endpoint(session_id: str, body: SessionRename, request: Request):
     """Title and sidebar flags share one authoritative revision and receipt."""
     from hermes_cli.web_server_sessions import _mutate_session_request
@@ -935,7 +946,7 @@ def _compact_json(obj) -> str:
     return json.dumps(jsonable_encoder(obj), ensure_ascii=False, separators=(",", ":"))
 
 
-@manage_router.get("/api/sessions/{session_id}/export")
+@manage_router.get("/api/sessions/{session_id}/export", responses={200: {"model": SessionExportResponse}})
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Stream a single session (metadata + messages) as JSON."""
     def _prepare_export(db):
@@ -971,7 +982,7 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
     return StreamingResponse(_stream_export(), media_type="application/json")
 
 
-@manage_router.post("/api/sessions/prune")
+@manage_router.post("/api/sessions/prune", responses={200: {"model": SessionPruneResponse}})
 async def prune_sessions_endpoint(body: SessionPrune):
     """Delete ended sessions matching filters without blocking the event loop."""
     if body.dry_run:
